@@ -733,29 +733,56 @@ app.get('/:config/subtitles/:type/:id.json', async (req, res) => {
         const imdbId = id.replace('tt', '');
         console.log(`[SUBTITLES] IMDB ID: ${imdbId}`);
         
-        // Try different search strategies
+        // Create better search queries using movie/series names
         let searchQueries = [];
         
+        // Movie name mappings for common IMDB IDs
+        const movieNames = {
+            '0816692': ['Interstellar', 'Interstelár', 'Hvězdný'],
+            '0111161': ['Shawshank Redemption', 'Vykoupení z věznice Shawshank', 'Shawshank'],
+            '0468569': ['Dark Knight', 'Temný rytíř', 'Batman'],
+            '0109830': ['Forrest Gump'],
+            '0137523': ['Fight Club', 'Klub rváčů'],
+            '0120737': ['Lord of the Rings', 'Pán prstenů', 'Fellowship'],
+            '0167260': ['Lord of the Rings Two Towers', 'Pán prstenů Dvě věže'],
+            '0171336': ['Lord of the Rings Return King', 'Pán prstenů Návrat krále'],
+            '0110912': ['Pulp Fiction', 'Historky z podsvětí'],
+            '0133093': ['Matrix'],
+            '0068646': ['Godfather', 'Kmotr'],
+            '0071562': ['Godfather Part II', 'Kmotr II'],
+            '0099685': ['Goodfellas', 'Chlapi do páru'],
+            '0076759': ['Star Wars', 'Hvězdné války'],
+            '0080684': ['Star Wars Empire Strikes Back', 'Hvězdné války Impérium vrací úder'],
+            '0086190': ['Star Wars Return of the Jedi', 'Hvězdné války Návrat Jediho']
+        };
+        
         if (type === 'movie') {
-            // For movies, search by IMDB ID first, then try generic terms
-            searchQueries = [
-                imdbId,
-                `imdb ${imdbId}`,
-                `tt${imdbId}`
-            ];
+            // Use movie name mappings if available
+            if (movieNames[imdbId]) {
+                searchQueries = [...movieNames[imdbId]];
+            } else {
+                // Fallback to IMDB ID
+                searchQueries = [imdbId, `tt${imdbId}`];
+            }
         } else if (type === 'series') {
             // For series, we need episode info from the ID
-            // Stremio sometimes passes series:id:season:episode format
             const idParts = id.split(':');
             if (idParts.length >= 4) {
                 const [, , season, episode] = idParts;
-                searchQueries = [
-                    `${imdbId} S${season.padStart(2, '0')}E${episode.padStart(2, '0')}`,
-                    `imdb ${imdbId} ${season}x${episode}`,
-                    imdbId
-                ];
+                if (movieNames[imdbId]) {
+                    // Use series name with episode info
+                    searchQueries = [
+                        `${movieNames[imdbId][0]} S${season.padStart(2, '0')}E${episode.padStart(2, '0')}`,
+                        `${movieNames[imdbId][0]} ${season}x${episode}`
+                    ];
+                } else {
+                    searchQueries = [
+                        `${imdbId} S${season.padStart(2, '0')}E${episode.padStart(2, '0')}`,
+                        `${imdbId} ${season}x${episode}`
+                    ];
+                }
             } else {
-                searchQueries = [imdbId, `imdb ${imdbId}`];
+                searchQueries = movieNames[imdbId] || [imdbId];
             }
         }
 
