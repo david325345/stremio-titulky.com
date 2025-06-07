@@ -74,6 +74,47 @@ async function getMovieTitle(imdbId) {
     }
 }
 
+// Helper function to create fallback SRT content when captcha is detected
+function createFallbackSRT(title, language = 'cs') {
+    const messages = {
+        cs: {
+            line1: "Bohužel byl detekován CAPTCHA na Titulky.com",
+            line2: "Prosím navštivte Titulky.com a stáhněte titulky ručně",
+            line3: `Hledejte: ${title}`,
+            line4: "Omlouváme se za nepříjemnosti"
+        },
+        sk: {
+            line1: "Bohužiaľ bol detekovaný CAPTCHA na Titulky.com",
+            line2: "Prosím navštívte Titulky.com a stiahnite titulky ručne",
+            line3: `Hľadajte: ${title}`,
+            line4: "Ospravedlňujeme sa za nepríjemnosti"
+        }
+    };
+    
+    const msg = messages[language] || messages.cs;
+    
+    return `1
+00:00:10,000 --> 00:00:15,000
+${msg.line1}
+
+2
+00:00:16,000 --> 00:00:21,000
+${msg.line2}
+
+3
+00:00:22,000 --> 00:00:27,000
+${msg.line3}
+
+4
+00:00:28,000 --> 00:00:33,000
+${msg.line4}
+
+5
+00:00:34,000 --> 00:00:39,000
+www.titulky.com
+`;
+}
+
 // Addon manifest
 const manifest = {
     id: 'com.titulky.subtitles',
@@ -98,6 +139,7 @@ class TitulkyClient {
         this.baseUrl = 'https://www.titulky.com';
         this.cookies = {};
         this.lastUsed = Date.now();
+        this.captchaDetected = false; // Track captcha state
     }
 
     async login(username, password) {
@@ -161,6 +203,7 @@ class TitulkyClient {
             }
 
             this.lastUsed = Date.now();
+            this.captchaDetected = false; // Reset captcha state on successful login
             console.log('[LOGIN] Login successful');
             return true;
         } catch (error) {
@@ -175,6 +218,13 @@ class TitulkyClient {
 
     async searchSubtitles(query) {
         console.log(`[SEARCH] Starting search for: "${query}"`);
+        
+        // If captcha was detected in previous requests, return empty results
+        if (this.captchaDetected) {
+            console.log('[SEARCH] Captcha detected in previous request, skipping search');
+            return [];
+        }
+        
         try {
             const searchUrl = `${this.baseUrl}/index.php?${new URLSearchParams({
                 'Fulltext': query,
@@ -217,6 +267,13 @@ class TitulkyClient {
 
             console.log(`[SEARCH] Content length: ${content.length} characters`);
             console.log(`[SEARCH] Content start: ${content.substring(0, 200)}`);
+
+            // Check for captcha in search results
+            if (content.includes('captcha') || content.includes('CAPTCHA')) {
+                console.log('[SEARCH] CAPTCHA detected in search results');
+                this.captchaDetected = true;
+                return [];
+            }
 
             const subtitles = this.parseSearchResults(content);
             console.log(`[SEARCH] Found ${subtitles.length} subtitles`);
@@ -404,9 +461,10 @@ class TitulkyClient {
             console.log(`[DOWNLOAD] Content length: ${content.length}`);
 
             // Check if captcha is required
-            if (content.includes('captcha')) {
-                console.log('[DOWNLOAD] Captcha detected');
-                throw new Error('Captcha required - not supported in this version');
+            if (content.includes('captcha') || content.includes('CAPTCHA')) {
+                console.log('[DOWNLOAD] Captcha detected - setting captcha flag');
+                this.captchaDetected = true;
+                throw new Error('CAPTCHA_DETECTED');
             }
 
             // Extract download link and wait time
@@ -692,6 +750,15 @@ app.get('/', (req, res) => {
             color: #667eea;
             font-weight: 600;
         }
+
+        .warning {
+            background: rgba(255, 193, 7, 0.1);
+            border: 2px solid #ffc107;
+            border-radius: 12px;
+            padding: 15px;
+            margin-top: 20px;
+            color: #856404;
+        }
     </style>
 </head>
 <body>
@@ -727,6 +794,11 @@ app.get('/', (req, res) => {
             </a>
         </div>
         
+        <div class="warning">
+            <strong>⚠️ Pozor na CAPTCHA:</strong><br>
+            Pokud Titulky.com zobrazí CAPTCHA, addon automaticky poskytne náhradní SRT soubor s instrukcemi pro ruční stažení.
+        </div>
+        
         <div class="info">
             <h3>📋 Instrukce:</h3>
             <ul>
@@ -735,6 +807,7 @@ app.get('/', (req, res) => {
                 <li>Po úspěšném ověření klikněte na "Nainstalovat do Stremio"</li>
                 <li>Addon bude dostupný v sekci Addons ve Stremio</li>
                 <li>Titulky se automaticky zobrazí při přehrávání filmů a seriálů</li>
+                <li><strong>CAPTCHA fallback:</strong> Když je detekována CAPTCHA, zobrazí se náhradní titulky s instrukcemi</li>
             </ul>
         </div>
     </div>
@@ -947,6 +1020,25 @@ app.get('/:config/subtitles/:type/:id*', async (req, res) => {
             return res.json({ subtitles: [] });
         }
         
+        // Check if captcha was detected in previous requests
+        if (client.captchaDetected) {
+            console.log('[SUBTITLES] CAPTCHA detected - providing fallback subtitle');
+            
+            const fallbackTitle = season && episode ? 
+                `${movieInfo.title} S${season}E${episode}` : 
+                movieInfo.title;
+            
+            const fallbackSubtitle = {
+                id: 'captcha_fallback',
+                url: `${req.protocol}://${req.get('host')}/${config}/fallback-subtitle/${encodeURIComponent(fallbackTitle)}.srt`,
+                lang: 'cs',
+                name: '⚠️ CAPTCHA detected - Manual download required',
+                rating: 1
+            };
+            
+            return res.json({ subtitles: [fallbackSubtitle] });
+        }
+        
         // Create search queries based on the real title
         let searchQueries = [];
         
@@ -986,6 +1078,25 @@ app.get('/:config/subtitles/:type/:id*', async (req, res) => {
             
             try {
                 const subtitles = await client.searchSubtitles(query);
+                
+                // Check if captcha was detected during search
+                if (client.captchaDetected) {
+                    console.log('[SUBTITLES] CAPTCHA detected during search - providing fallback subtitle');
+                    
+                    const fallbackTitle = season && episode ? 
+                        `${movieInfo.title} S${season}E${episode}` : 
+                        movieInfo.title;
+                    
+                    const fallbackSubtitle = {
+                        id: 'captcha_fallback',
+                        url: `${req.protocol}://${req.get('host')}/${config}/fallback-subtitle/${encodeURIComponent(fallbackTitle)}.srt`,
+                        lang: 'cs',
+                        name: '⚠️ CAPTCHA detected - Manual download required',
+                        rating: 1
+                    };
+                    
+                    return res.json({ subtitles: [fallbackSubtitle] });
+                }
                 
                 if (subtitles.length > 0) {
                     console.log(`[SUBTITLES] SUCCESS: Found ${subtitles.length} results for query: "${query}"`);
@@ -1028,6 +1139,30 @@ app.get('/:config/subtitles/:type/:id*', async (req, res) => {
     }
 });
 
+// New route for fallback subtitles when captcha is detected
+app.get('/:config/fallback-subtitle/:title', (req, res) => {
+    const { title } = req.params;
+    const decodedTitle = decodeURIComponent(title.replace('.srt', ''));
+    
+    console.log(`[FALLBACK] Generating fallback subtitle for: ${decodedTitle}`);
+    
+    try {
+        const fallbackContent = createFallbackSRT(decodedTitle, 'cs');
+        
+        res.set({
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Content-Disposition': `attachment; filename="captcha_fallback.srt"`,
+            'Content-Length': Buffer.byteLength(fallbackContent, 'utf-8')
+        });
+        
+        res.send(fallbackContent);
+        
+    } catch (error) {
+        console.error('[FALLBACK] Error generating fallback subtitle:', error.message);
+        res.status(500).json({ error: 'Failed to generate fallback subtitle' });
+    }
+});
+
 app.get('/:config/subtitle/:id/:linkFile', async (req, res) => {
     const { config, id, linkFile } = req.params;
     
@@ -1048,28 +1183,62 @@ app.get('/:config/subtitle/:id/:linkFile', async (req, res) => {
         const decodedLinkFile = decodeURIComponent(linkFile.replace('.srt', ''));
         console.log(`[DOWNLOAD] Decoded link file: ${decodedLinkFile}`);
         
-        const subtitleData = await client.downloadSubtitle(id, decodedLinkFile);
-        
-        // Check if we got SRT content (string) or ZIP data (buffer)
-        if (typeof subtitleData === 'string') {
-            console.log(`[DOWNLOAD] Returning SRT content (${subtitleData.length} characters)`);
+        try {
+            const subtitleData = await client.downloadSubtitle(id, decodedLinkFile);
             
-            res.set({
-                'Content-Type': 'text/plain; charset=utf-8',
-                'Content-Disposition': `attachment; filename="subtitle_${id}.srt"`,
-                'Content-Length': Buffer.byteLength(subtitleData, 'utf-8')
-            });
-            res.send(subtitleData);
-        } else {
-            console.log(`[DOWNLOAD] Returning ZIP data (${subtitleData.length} bytes)`);
+            // Check if we got SRT content (string) or ZIP data (buffer)
+            if (typeof subtitleData === 'string') {
+                console.log(`[DOWNLOAD] Returning SRT content (${subtitleData.length} characters)`);
+                
+                res.set({
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    'Content-Disposition': `attachment; filename="subtitle_${id}.srt"`,
+                    'Content-Length': Buffer.byteLength(subtitleData, 'utf-8')
+                });
+                res.send(subtitleData);
+            } else {
+                console.log(`[DOWNLOAD] Returning ZIP data (${subtitleData.length} bytes)`);
+                
+                res.set({
+                    'Content-Type': 'application/zip',
+                    'Content-Disposition': `attachment; filename="subtitle_${id}.zip"`,
+                    'Content-Length': subtitleData.length
+                });
+                res.send(subtitleData);
+            }
+        } catch (downloadError) {
+            // Check if error is due to captcha
+            if (downloadError.message === 'CAPTCHA_DETECTED') {
+                console.log(`[DOWNLOAD] CAPTCHA detected - generating fallback SRT for subtitle ${id}`);
+                
+                // Try to get movie title for better fallback content
+                let fallbackTitle = `Subtitle ${id}`;
+                try {
+                    // Extract movie info from the linkFile if possible
+                    const titleFromLink = decodedLinkFile.replace(/-/g, ' ').replace(/\d+/g, '').trim();
+                    if (titleFromLink.length > 3) {
+                        fallbackTitle = titleFromLink;
+                    }
+                } catch (e) {
+                    console.log('[DOWNLOAD] Could not extract title from linkFile');
+                }
+                
+                const fallbackContent = createFallbackSRT(fallbackTitle, 'cs');
+                
+                res.set({
+                    'Content-Type': 'text/plain; charset=utf-8',
+                    'Content-Disposition': `attachment; filename="captcha_fallback_${id}.srt"`,
+                    'Content-Length': Buffer.byteLength(fallbackContent, 'utf-8')
+                });
+                
+                res.send(fallbackContent);
+                return;
+            }
             
-            res.set({
-                'Content-Type': 'application/zip',
-                'Content-Disposition': `attachment; filename="subtitle_${id}.zip"`,
-                'Content-Length': subtitleData.length
-            });
-            res.send(subtitleData);
+            // For other errors, rethrow
+            throw downloadError;
         }
+        
     } catch (error) {
         console.error('[DOWNLOAD] Error:', error.message);
         console.error('[DOWNLOAD] Stack:', error.stack);
@@ -1150,7 +1319,8 @@ app.get('/test/:config/:query', async (req, res) => {
             success: true,
             query: decodeURIComponent(query),
             found: subtitles.length,
-            subtitles: subtitles.slice(0, 5) // First 5 results
+            subtitles: subtitles.slice(0, 5), // First 5 results
+            captchaDetected: client.captchaDetected
         });
     } catch (error) {
         console.error('[TEST] Error:', error.message);
@@ -1163,12 +1333,16 @@ app.get('/health', (req, res) => {
     const sessionCount = userSessions.size;
     const uptime = process.uptime();
     
+    // Count sessions with captcha detected
+    const captchaSessions = Array.from(userSessions.values()).filter(session => session.captchaDetected).length;
+    
     res.json({ 
         status: 'OK', 
         timestamp: new Date().toISOString(),
         uptime: Math.floor(uptime),
         activeSessions: sessionCount,
-        version: '1.0.0'
+        captchaSessions: captchaSessions,
+        version: '1.0.1'
     });
 });
 
@@ -1197,7 +1371,7 @@ app.use((req, res) => {
     });
 });
 
-// Clean up expired sessions every hour
+// Clean up expired sessions every hour and reset captcha flags
 setInterval(() => {
     const oneHour = 60 * 60 * 1000;
     const now = Date.now();
@@ -1208,6 +1382,10 @@ setInterval(() => {
         if (now - session.lastUsed > oneHour) {
             console.log(`[CLEANUP] Removing expired session for ${username}`);
             userSessions.delete(username);
+        } else if (session.captchaDetected && now - session.lastUsed > 10 * 60 * 1000) {
+            // Reset captcha flag after 10 minutes of inactivity
+            console.log(`[CLEANUP] Resetting captcha flag for ${username}`);
+            session.captchaDetected = false;
         }
     }
     
@@ -1219,4 +1397,5 @@ app.listen(PORT, () => {
     console.log(`Manifest URL: http://localhost:${PORT}/manifest.json`);
     console.log(`Health check: http://localhost:${PORT}/health`);
     console.log('Debug logging enabled');
+    console.log('CAPTCHA fallback functionality active');
 });
