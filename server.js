@@ -213,7 +213,16 @@ class TitulkyClient {
                 
                 console.log(`[PARSE] Row ${index}: ${cells.length} cells`);
                 
-                if (cells.length < 9) {
+                // Debug: print cell contents for first few rows
+                if (index < 3) {
+                    cells.each((cellIndex, cell) => {
+                        const cellText = $(cell).text().trim();
+                        console.log(`[PARSE] Row ${index}, Cell ${cellIndex}: "${cellText}"`);
+                    });
+                }
+                
+                // Adjust for different table structure (8 cells instead of 9)
+                if (cells.length < 8) {
                     console.log(`[PARSE] Row ${index}: Insufficient cells (${cells.length}), skipping`);
                     return;
                 }
@@ -235,12 +244,12 @@ class TitulkyClient {
 
                 const title = linkElement.text().trim();
                 const version = cells.eq(2).find('a').attr('title') || '';
-                const year = cells.eq(4).text().trim();
-                const downloads = parseInt(cells.eq(5).text().trim()) || 0;
-                const langImg = cells.eq(6).find('img');
+                const year = cells.eq(3).text().trim(); // Adjusted index
+                const downloads = parseInt(cells.eq(4).text().trim()) || 0; // Adjusted index
+                const langImg = cells.eq(5).find('img'); // Adjusted index
                 const lang = langImg.attr('alt') || '';
-                const size = parseFloat(cells.eq(8).text().trim()) || 0;
-                const author = cells.eq(9).find('a').text().trim() || '';
+                const size = parseFloat(cells.eq(6).text().trim()) || 0; // Adjusted index
+                const author = cells.eq(7).find('a').text().trim() || ''; // Adjusted index
 
                 console.log(`[PARSE] Row ${index}: title="${title}", lang="${lang}", downloads=${downloads}`);
 
