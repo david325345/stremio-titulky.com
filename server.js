@@ -48,6 +48,159 @@ app.use(express.urlencoded({ extended: true }));
 // Store user sessions (in production, use Redis or database)
 const userSessions = new Map();
 
+// Simplified subtitle matching system - focus only on video source
+class SubtitleMatcher {
+    constructor() {
+        // Video source priority (higher = better match)
+        this.sourcePriority = {
+            'bluray': 100,
+            'bdrip': 95,
+            'remux': 90,
+            'web-dl': 85,
+            'webdl': 85,
+            'webrip': 80,
+            'hdtv': 75,
+            'dvdrip': 70,
+            'dvdscr': 65,
+            'hdcam': 30,
+            'cam': 25,
+            'ts': 20
+        };
+    }
+
+    // Extract video source from title
+    extractVideoInfo(streamTitle) {
+        console.log(`[MATCHER] Analyzing stream: "${streamTitle}"`);
+        
+        const info = {
+            source: this.extractSource(streamTitle),
+            originalTitle: streamTitle
+        };
+
+        console.log(`[MATCHER] Extracted video source: ${info.source}`);
+        return info;
+    }
+
+    extractSource(title) {
+        const sources = ['bluray', 'bdrip', 'remux', 'web-dl', 'webdl', 'webrip', 'hdtv', 'dvdrip', 'dvdscr', 'hdcam', 'cam', 'ts'];
+        const titleLower = title.toLowerCase();
+        
+        for (const source of sources) {
+            if (titleLower.includes(source) || titleLower.includes(source.replace('-', ''))) {
+                return source;
+            }
+        }
+        return 'unknown';
+    }
+
+    // Calculate compatibility score between video and subtitle sources
+    calculateCompatibilityScore(videoInfo, subtitleInfo) {
+        console.log(`[MATCHER] Comparing video source "${videoInfo.source}" with subtitle source "${subtitleInfo.source}"`);
+
+        // Perfect match
+        if (videoInfo.source === subtitleInfo.source) {
+            console.log(`[MATCHER] Perfect source match: 100%`);
+            return 100;
+        }
+
+        // Compatible sources
+        if (this.areSourcesCompatible(videoInfo.source, subtitleInfo.source)) {
+            console.log(`[MATCHER] Compatible sources: 80%`);
+            return 80;
+        }
+
+        // Different but known sources
+        if (videoInfo.source !== 'unknown' && subtitleInfo.source !== 'unknown') {
+            console.log(`[MATCHER] Different known sources: 40%`);
+            return 40;
+        }
+
+        // Unknown source
+        console.log(`[MATCHER] Unknown source: 20%`);
+        return 20;
+    }
+
+    areSourcesCompatible(source1, source2) {
+        const compatibleGroups = [
+            ['bluray', 'bdrip', 'remux'],
+            ['web-dl', 'webdl', 'webrip'],
+            ['dvdrip', 'dvdscr'],
+            ['hdcam', 'cam', 'ts']
+        ];
+
+        for (const group of compatibleGroups) {
+            if (group.includes(source1) && group.includes(source2)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Sort subtitles by source relevance to video
+    sortSubtitlesByRelevance(subtitles, videoInfo) {
+        console.log(`[MATCHER] Sorting ${subtitles.length} subtitles by source relevance`);
+        
+        const scoredSubtitles = subtitles.map(subtitle => {
+            const subtitleInfo = this.extractVideoInfo(subtitle.videoVersion || subtitle.title);
+            const score = this.calculateCompatibilityScore(videoInfo, subtitleInfo);
+            
+            return {
+                ...subtitle,
+                compatibilityScore: score,
+                subtitleVideoInfo: subtitleInfo
+            };
+        });
+
+        // Sort by compatibility score (descending), then by downloads (descending)
+        scoredSubtitles.sort((a, b) => {
+            if (Math.abs(a.compatibilityScore - b.compatibilityScore) < 10) {
+                // If scores are close (within 10%), prefer more downloaded
+                return (b.downloads || 0) - (a.downloads || 0);
+            }
+            return b.compatibilityScore - a.compatibilityScore;
+        });
+
+        console.log(`[MATCHER] Top 3 source matches:`);
+        scoredSubtitles.slice(0, 3).forEach((sub, i) => {
+            console.log(`[MATCHER] ${i+1}. "${sub.title}" - Source: ${sub.subtitleVideoInfo.source} - Score: ${sub.compatibilityScore}%`);
+        });
+
+        return scoredSubtitles;
+    }
+
+    // Create enhanced subtitle name with source compatibility indicator
+    createEnhancedSubtitleName(subtitle, isTopMatch = false) {
+        let name = subtitle.title;
+        
+        // Add source info if available
+        if (subtitle.videoVersion && !name.includes(subtitle.videoVersion)) {
+            const source = this.extractSource(subtitle.videoVersion);
+            if (source !== 'unknown') {
+                name += ` [${source.toUpperCase()}]`;
+            }
+        }
+
+        // Add compatibility indicator based on source matching
+        if (isTopMatch && subtitle.compatibilityScore === 100) {
+            name = `🎯 ${name}`; // Perfect source match
+        } else if (subtitle.compatibilityScore >= 80) {
+            name = `✅ ${name}`; // Compatible source
+        } else if (subtitle.compatibilityScore <= 40) {
+            name = `⚠️ ${name}`; // Different/unknown source
+        }
+
+        // Add author if available
+        if (subtitle.author && !name.includes(subtitle.author)) {
+            name += ` - ${subtitle.author}`;
+        }
+
+        return name;
+    }
+}
+
+// Initialize matcher
+const subtitleMatcher = new SubtitleMatcher();
+
 // Keep-alive ping endpoint
 app.get('/ping', (req, res) => {
     res.json({ 
@@ -149,6 +302,181 @@ class TitulkyClient {
         this.cookies = {};
         this.lastUsed = Date.now();
         this.captchaDetected = false; // Track captcha state
+    }
+
+    // New method to fetch detailed subtitle information including video version
+    async getSubtitleDetails(linkFile, subtitleId) {
+        console.log(`[DETAILS] Fetching details for: ${linkFile}-${subtitleId}.htm`);
+        
+        try {
+            const detailUrl = `${this.baseUrl}/${linkFile}-${subtitleId}.htm`;
+            
+            const response = await axios.get(detailUrl, {
+                headers: {
+                    'Cookie': this.getCookieString(),
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Referer': this.baseUrl,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'cs,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate'
+                },
+                timeout: 10000,
+                responseType: 'arraybuffer'
+            });
+
+            // Handle compressed response
+            let content;
+            const contentEncoding = response.headers['content-encoding'];
+            
+            if (contentEncoding === 'gzip') {
+                content = zlib.gunzipSync(response.data).toString('utf-8');
+            } else if (contentEncoding === 'deflate') {
+                content = zlib.inflateSync(response.data).toString('utf-8');
+            } else {
+                content = response.data.toString('utf-8');
+            }
+
+            return this.parseSubtitleDetails(content);
+            
+        } catch (error) {
+            console.error(`[DETAILS] Error fetching details for ${linkFile}-${subtitleId}:`, error.message);
+            return null;
+        }
+    }
+
+    parseSubtitleDetails(html) {
+        console.log('[DETAILS] Parsing subtitle detail page');
+        const $ = cheerio.load(html);
+        
+        const details = {
+            videoVersion: '',
+            releaseInfo: '',
+            author: ''
+        };
+
+        try {
+            // Look for the main content table with subtitle details
+            const infoTable = $('table').filter((i, table) => {
+                return $(table).text().includes('VERZE PRO') || $(table).text().includes('DALŠÍ INFO');
+            });
+
+            if (infoTable.length > 0) {
+                // Parse version info from "VERZE PRO" section
+                const versionCell = infoTable.find('td').filter((i, cell) => {
+                    return $(cell).text().trim().startsWith('VERZE PRO');
+                });
+
+                if (versionCell.length > 0) {
+                    const versionText = versionCell.next('td').text().trim();
+                    details.videoVersion = this.cleanVersionText(versionText);
+                    console.log(`[DETAILS] Found video version: ${details.videoVersion}`);
+                }
+
+                // Look for additional release info in table cells
+                infoTable.find('tr').each((i, row) => {
+                    const cells = $(row).find('td');
+                    if (cells.length >= 2) {
+                        const label = $(cells[0]).text().trim();
+                        const value = $(cells[1]).text().trim();
+                        
+                        switch (label) {
+                            case 'DALŠÍ INFO':
+                                details.releaseInfo = value;
+                                break;
+                            case 'ULOŽIL':
+                                details.author = value;
+                                break;
+                        }
+                    }
+                });
+            }
+
+            // Try alternative parsing - look for version info in different structures
+            if (!details.videoVersion) {
+                // Look for video file names or version strings in the page
+                const versionPatterns = [
+                    /([A-Za-z0-9]+\.[A-Za-z0-9]+\.[0-9]+p\.[A-Za-z0-9]+\.[A-Za-z0-9-]+)/g,
+                    /([0-9]+p[.-][A-Za-z0-9.-]+)/g,
+                    /(BluRay|BDRip|DVDRip|WEBRip|HDTV|WEB-DL)[.-]?[A-Za-z0-9.-]*/gi,
+                    /(x264|x265|H\.264|H\.265|HEVC)[.-]?[A-Za-z0-9.-]*/gi
+                ];
+
+                const pageText = $.text();
+                for (const pattern of versionPatterns) {
+                    const matches = pageText.match(pattern);
+                    if (matches && matches.length > 0) {
+                        details.videoVersion = matches[0];
+                        console.log(`[DETAILS] Extracted version from pattern: ${details.videoVersion}`);
+                        break;
+                    }
+                }
+            }
+
+        } catch (error) {
+            console.error('[DETAILS] Error parsing subtitle details:', error.message);
+        }
+
+        return details;
+    }
+
+    cleanVersionText(text) {
+        // Clean and normalize version text
+        return text
+            .replace(/\s+/g, ' ')
+            .replace(/[^\w\d\.\-\[\]]/g, ' ')
+            .trim()
+            .substring(0, 100); // Limit length
+    }
+
+    // Enhanced search with detailed info
+    async searchSubtitlesWithDetails(query, fetchDetails = false) {
+        console.log(`[SEARCH+] Starting enhanced search for: "${query}"`);
+        
+        const basicResults = await this.searchSubtitles(query);
+        
+        if (!fetchDetails || basicResults.length === 0) {
+            return basicResults;
+        }
+
+        // Fetch details for top results (limit to avoid too many requests)
+        const detailedResults = [];
+        const maxDetails = Math.min(5, basicResults.length); // Limit to top 5
+        
+        for (let i = 0; i < maxDetails; i++) {
+            const subtitle = basicResults[i];
+            console.log(`[SEARCH+] Fetching details for result ${i+1}/${maxDetails}: ${subtitle.title}`);
+            
+            try {
+                const details = await this.getSubtitleDetails(subtitle.linkFile, subtitle.id);
+                
+                if (details && details.videoVersion) {
+                    subtitle.videoVersion = details.videoVersion;
+                    subtitle.releaseInfo = details.releaseInfo;
+                    subtitle.detailedAuthor = details.author;
+                    
+                    console.log(`[SEARCH+] Enhanced subtitle: ${subtitle.title} - Version: ${subtitle.videoVersion}`);
+                } else {
+                    console.log(`[SEARCH+] No additional details found for: ${subtitle.title}`);
+                }
+                
+                detailedResults.push(subtitle);
+                
+                // Small delay to avoid overwhelming the server
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+            } catch (error) {
+                console.error(`[SEARCH+] Failed to fetch details for ${subtitle.title}:`, error.message);
+                // Add subtitle without details
+                detailedResults.push(subtitle);
+            }
+        }
+        
+        // Add remaining results without details
+        for (let i = maxDetails; i < basicResults.length; i++) {
+            detailedResults.push(basicResults[i]);
+        }
+        
+        return detailedResults;
     }
 
     async login(username, password) {
@@ -1101,7 +1429,9 @@ app.get('/:config/subtitles/:type/:id*', async (req, res) => {
             console.log(`[SUBTITLES] Trying search query ${i+1}/${searchQueries.length}: "${query}"`);
             
             try {
-                const subtitles = await client.searchSubtitles(query);
+                // Use enhanced search for first query to get version info
+                const fetchDetails = (i === 0); // Only fetch details for first/best query
+                const subtitles = await client.searchSubtitlesWithDetails(query, fetchDetails);
                 
                 // Check if captcha was detected during search
                 if (client.captchaDetected) {
@@ -1137,20 +1467,53 @@ app.get('/:config/subtitles/:type/:id*', async (req, res) => {
 
         console.log(`[SUBTITLES] Total subtitles found: ${allSubtitles.length}`);
         
-        const stremioSubtitles = allSubtitles.map(sub => {
+        // Extract video source for matching
+        let videoInfo = { source: 'unknown' };
+        
+        try {
+            // Try to get video source from request headers or create default
+            const userAgent = req.get('User-Agent') || '';
+            const referrer = req.get('Referer') || '';
+            
+            // Create basic video info for source matching
+            let searchTitle = '';
+            if (type === 'movie') {
+                searchTitle = `${movieInfo.title} ${movieInfo.year}`;
+            } else {
+                searchTitle = `${movieInfo.title} S${season}E${episode}`;
+            }
+            
+            videoInfo = subtitleMatcher.extractVideoInfo(searchTitle);
+            
+            console.log(`[SUBTITLES] Using video source for matching: ${videoInfo.source}`);
+        } catch (error) {
+            console.log(`[SUBTITLES] Could not extract video source, using defaults`);
+        }
+
+        // Sort subtitles by source relevance to video
+        const sortedSubtitles = subtitleMatcher.sortSubtitlesByRelevance(allSubtitles, videoInfo);
+        
+        // Limit to top 6 results
+        const topSubtitles = sortedSubtitles.slice(0, 6);
+        
+        const stremioSubtitles = topSubtitles.map((sub, index) => {
+            const isTopMatch = index === 0;
+            const enhancedName = subtitleMatcher.createEnhancedSubtitleName(sub, isTopMatch);
+
             const subtitle = {
                 id: `${sub.id}:${sub.linkFile}`,
                 url: `${req.protocol}://${req.get('host')}/${config}/subtitle/${sub.id}/${encodeURIComponent(sub.linkFile)}.srt`,
                 lang: sub.language.toLowerCase() === 'czech' ? 'cs' : 
                       sub.language.toLowerCase() === 'slovak' ? 'sk' : 'cs',
-                name: `${sub.title}${sub.version ? ` (${sub.version})` : ''}${sub.author ? ` - ${sub.author}` : ''}`,
-                rating: sub.rating
+                name: enhancedName,
+                rating: Math.min(5, Math.max(1, Math.round(sub.compatibilityScore / 20))) // Convert to 1-5 rating
             };
-            console.log(`[SUBTITLES] Mapped subtitle: ${subtitle.name} (${subtitle.lang})`);
+            
+            console.log(`[SUBTITLES] ${index + 1}. ${subtitle.name} (Source Score: ${sub.compatibilityScore}%, Rating: ${subtitle.rating})`);
             return subtitle;
         });
 
-        console.log(`[SUBTITLES] Returning ${stremioSubtitles.length} subtitles to Stremio`);
+        console.log(`[SUBTITLES] Returning ${stremioSubtitles.length} source-matched subtitles to Stremio`);
         res.json({ subtitles: stremioSubtitles });
         
     } catch (error) {
@@ -1305,7 +1668,40 @@ app.post('/configure', async (req, res) => {
     });
 });
 
-// Test endpoint pro ruční testování názvu filmu
+// Optional: Add endpoint to test source matching
+app.get('/test-matching/:config/:videoTitle', async (req, res) => {
+    const { config, videoTitle } = req.params;
+    
+    try {
+        const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
+        const { username } = decodedConfig;
+
+        const client = userSessions.get(username);
+        if (!client) {
+            return res.status(401).json({ error: 'Session expired' });
+        }
+
+        const videoInfo = subtitleMatcher.extractVideoInfo(decodeURIComponent(videoTitle));
+        const subtitles = await client.searchSubtitlesWithDetails(decodeURIComponent(videoTitle), true);
+        const sortedSubtitles = subtitleMatcher.sortSubtitlesByRelevance(subtitles, videoInfo);
+        
+        res.json({
+            success: true,
+            videoSource: videoInfo.source,
+            totalFound: subtitles.length,
+            top6Results: sortedSubtitles.slice(0, 6).map(sub => ({
+                title: sub.title,
+                videoVersion: sub.videoVersion,
+                detectedSource: sub.subtitleVideoInfo?.source || 'unknown',
+                compatibilityScore: sub.compatibilityScore,
+                enhancedName: subtitleMatcher.createEnhancedSubtitleName(sub)
+            }))
+        });
+    } catch (error) {
+        console.error('[TEST-MATCHING] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
 app.get('/test/:config/:query', async (req, res) => {
     const { config, query } = req.params;
     
