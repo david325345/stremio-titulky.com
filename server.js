@@ -560,19 +560,23 @@ app.get('/', (req, res) => {
 });
 
 app.get('/manifest.json', (req, res) => {
+    console.log('[MANIFEST] Basic manifest requested');
     res.json(manifest);
 });
 
 app.get('/:config/manifest.json', (req, res) => {
     const config = req.params.config;
+    console.log(`[MANIFEST] Configured manifest requested, config length: ${config.length}`);
     try {
         const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
+        console.log(`[MANIFEST] Config decoded for user: ${decodedConfig.username}`);
         const configuredManifest = {
             ...manifest,
             name: `${manifest.name} (${decodedConfig.username})`
         };
         res.json(configuredManifest);
     } catch (error) {
+        console.error('[MANIFEST] Invalid configuration:', error.message);
         res.status(400).json({ error: 'Invalid configuration' });
     }
 });
@@ -645,16 +649,23 @@ app.get('/:config/subtitles/:type/:id.json', async (req, res) => {
         let allSubtitles = [];
         
         // Try each search query until we find results
-        for (const query of searchQueries) {
-            console.log(`[SUBTITLES] Trying search query: "${query}"`);
-            const subtitles = await client.searchSubtitles(query);
+        for (let i = 0; i < searchQueries.length; i++) {
+            const query = searchQueries[i];
+            console.log(`[SUBTITLES] Trying search query ${i+1}/${searchQueries.length}: "${query}"`);
             
-            if (subtitles.length > 0) {
-                console.log(`[SUBTITLES] Found ${subtitles.length} results for query: "${query}"`);
-                allSubtitles = subtitles;
-                break;
-            } else {
-                console.log(`[SUBTITLES] No results for query: "${query}"`);
+            try {
+                const subtitles = await client.searchSubtitles(query);
+                
+                if (subtitles.length > 0) {
+                    console.log(`[SUBTITLES] SUCCESS: Found ${subtitles.length} results for query: "${query}"`);
+                    allSubtitles = subtitles;
+                    break;
+                } else {
+                    console.log(`[SUBTITLES] No results for query: "${query}"`);
+                }
+            } catch (searchError) {
+                console.error(`[SUBTITLES] Search failed for query "${query}":`, searchError.message);
+                // Continue with next query
             }
         }
 
@@ -756,7 +767,40 @@ app.post('/configure', async (req, res) => {
     });
 });
 
-// Debug endpoint for testing
+// Test endpoint pro ruční testování
+app.get('/test/:config/:query', async (req, res) => {
+    const { config, query } = req.params;
+    
+    console.log(`[TEST] Manual test request: query="${query}"`);
+    
+    try {
+        const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
+        const { username, password } = decodedConfig;
+
+        let client = userSessions.get(username);
+        if (!client) {
+            console.log(`[TEST] Creating new session for ${username}`);
+            client = new TitulkyClient();
+            const loginSuccess = await client.login(username, password);
+            if (!loginSuccess) {
+                return res.status(401).json({ error: 'Login failed' });
+            }
+            userSessions.set(username, client);
+        }
+
+        const subtitles = await client.searchSubtitles(decodeURIComponent(query));
+        
+        res.json({
+            success: true,
+            query: decodeURIComponent(query),
+            found: subtitles.length,
+            subtitles: subtitles.slice(0, 5) // First 5 results
+        });
+    } catch (error) {
+        console.error('[TEST] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
 app.get('/debug/:config', async (req, res) => {
     const { config } = req.params;
     
