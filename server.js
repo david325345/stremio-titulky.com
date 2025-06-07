@@ -27,6 +27,30 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 // Store user sessions (in production, use Redis or database)
+async function getMovieTitle(imdbId) {
+    try {
+        // Use OMDB API to get movie title (free API)
+        const omdbUrl = `http://www.omdbapi.com/?i=tt${imdbId}&apikey=trilogy`;
+        console.log(`[OMDB] Fetching title for IMDB ${imdbId}`);
+        
+        const response = await axios.get(omdbUrl, { timeout: 5000 });
+        
+        if (response.data && response.data.Title && response.data.Response === 'True') {
+            console.log(`[OMDB] Found title: "${response.data.Title}" (${response.data.Year})`);
+            return {
+                title: response.data.Title,
+                year: response.data.Year,
+                type: response.data.Type
+            };
+        } else {
+            console.log(`[OMDB] No title found for IMDB ${imdbId}`);
+            return null;
+        }
+    } catch (error) {
+        console.error(`[OMDB] Error fetching title for IMDB ${imdbId}:`, error.message);
+        return null;
+    }
+}
 const userSessions = new Map();
 
 // Addon manifest
@@ -842,6 +866,7 @@ app.get('/:config/subtitles/:type/:id*', async (req, res) => {
         
         // Movie name mappings for common IMDB IDs
         const movieNames = {
+            // Klasické filmy
             '0816692': ['Interstellar', 'Interstelár', 'Hvězdný'],
             '0111161': ['Shawshank Redemption', 'Vykoupení z věznice Shawshank', 'Shawshank'],
             '0468569': ['Dark Knight', 'Temný rytíř', 'Batman'],
@@ -855,18 +880,98 @@ app.get('/:config/subtitles/:type/:id*', async (req, res) => {
             '0068646': ['Godfather', 'Kmotr'],
             '0071562': ['Godfather Part II', 'Kmotr II'],
             '0099685': ['Goodfellas', 'Chlapi do páru'],
+            
+            // Sci-Fi klasiky
             '0076759': ['Star Wars', 'Hvězdné války'],
             '0080684': ['Star Wars Empire Strikes Back', 'Hvězdné války Impérium vrací úder'],
-            '0086190': ['Star Wars Return of the Jedi', 'Hvězdné války Návrat Jediho']
+            '0086190': ['Star Wars Return of the Jedi', 'Hvězdné války Návrat krále'],
+            '0100802': ['Total Recall', 'Vzpomínky na budoucnost', 'Celková vzpomínka'],
+            '0078748': ['Alien', 'Vetřelec'],
+            '0090605': ['Aliens', 'Vetřelci'],
+            '0088763': ['Back to the Future', 'Návrat do budoucnosti'],
+            '0089881': ['Back to the Future Part II', 'Návrat do budoucnosti II'],
+            '0099088': ['Back to the Future Part III', 'Návrat do budoucnosti III'],
+            '0107290': ['Jurassic Park', 'Jurský park'],
+            '0062622': ['2001 A Space Odyssey', '2001 Vesmírná odysea'],
+            
+            // Akční filmy
+            '0108052': ['Schindlers List', 'Schindlerův seznam'],
+            '0102926': ['Silence of the Lambs', 'Mlčení jehňátek'],
+            '0120815': ['Saving Private Ryan', 'Zachraňte vojína Ryana'],
+            '0086250': ['Scarface', 'Zjizvená tvář'],
+            '0095016': ['Die Hard', 'Smrtonosná past'],
+            '0172495': ['Gladiator'],
+            '0253474': ['Pirates of the Caribbean', 'Piráti z Karibiku'],
+            '0371746': ['Iron Man', 'Železný muž'],
+            
+            // Thrillery a drama
+            '0114369': ['Se7en', 'Sedm'],
+            '0110413': ['Leon', 'Profesionál'],
+            '0482571': ['Prestige', 'Prestíž'],
+            '0434409': ['V for Vendetta', 'V jako Vendetta'],
+            '0338013': ['Eternal Sunshine', 'Věčný svit neposkvrněné mysli'],
+            '0361748': ['Inglourious Basterds', 'Hanební pancharti'],
+            '0477348': ['No Country for Old Men', 'Tady pro starce není místo'],
+            '1375666': ['Inception', 'Počátek'],
+            '0993846': ['Wolf of Wall Street', 'Vlk z Wall Street'],
+            '0119217': ['Good Will Hunting', 'Will Hunting'],
+            '0118799': ['Life is Beautiful', 'Život je krásný'],
+            '0120586': ['American Beauty', 'Americká krása'],
+            '0120667': ['Big Lebowski', 'Velký Lebowski'],
+            
+            // Horory a psychologické thrillery
+            '0081505': ['Shining', 'Osvícení'],
+            '0054215': ['Psycho'],
+            '0075314': ['Taxi Driver', 'Taxikář'],
+            '0073486': ['One Flew Over the Cuckoos Nest', 'Přelet nad kukaččím hnízdem'],
+            '0056592': ['Lawrence of Arabia', 'Lawrence z Arábie'],
+            '0053125': ['North by Northwest', 'Na sever severozápadní linkou'],
+            
+            // Novější filmy
+            '1856101': ['Blade Runner 2049'],
+            '0848228': ['Avengers'],
+            '4154756': ['Avengers Endgame', 'Avengers Konec hry'],
+            '4154664': ['Avengers Infinity War', 'Avengers Válka nekonečna'],
+            '2015381': ['Guardians of the Galaxy', 'Strážci galaxie'],
+            '3896198': ['Guardians of the Galaxy Vol 2', 'Strážci galaxie 2'],
+            '6334354': ['Top Gun Maverick'],
+            '1877830': ['Baby Driver'],
+            '8503618': ['Everything Everywhere All at Once'],
+            
+            // Populární seriály
+            '0944947': ['Game of Thrones', 'Hra o trůny'],
+            '0903747': ['Breaking Bad'],
+            '2306299': ['The Witcher', 'Zaklínač'],
+            '1399': ['Game of Thrones', 'Hra o trůny'],
+            '0141842': ['The Sopranos', 'Sopranos'],
+            '0108778': ['Friends', 'Přátelé'],
+            '0472954': ['Lost', 'Ztraceni'],
+            '1475582': ['Sherlock'],
+            '0386676': ['The Office', 'Kancelář'],
+            '1596363': ['Stranger Things'],
+            '7658402': ['The Umbrella Academy', 'Umbrella Academy'],
+            '8111088': ['The Last of Us'],
+            '1190634': ['The Boys'],
+            '5421602': ['Wednesday', 'Addams Family'],
+            '1405406': ['The Witcher', 'Zaklínač']
         };
         
         if (type === 'movie') {
-            // Use movie name mappings if available
+            // Always use movie names instead of IMDB IDs
             if (movieNames[imdbId]) {
                 searchQueries = [...movieNames[imdbId]];
             } else {
-                // Fallback to IMDB ID
-                searchQueries = [imdbId, `tt${imdbId}`];
+                // For unknown movies, try to derive common names from IMDB ID
+                // This is a fallback - ideally you'd use OMDB/TMDB API here
+                searchQueries = [
+                    // Don't use IMDB ID at all, it rarely works on Titulky.com
+                    // Instead, log that we need to add this movie to our mapping
+                ];
+                console.log(`[SUBTITLES] WARNING: Movie IMDB ${imdbId} not in database. Consider adding it to movieNames mapping.`);
+                console.log(`[SUBTITLES] No search will be performed for unknown movie.`);
+                
+                // Return empty results for unmapped movies
+                return res.json({ subtitles: [] });
             }
         } else if (type === 'series') {
             // For series, we need episode info from the ID
