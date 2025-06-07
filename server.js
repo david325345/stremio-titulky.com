@@ -13,6 +13,7 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: false
 }));
+
 // Middleware pro logování všech požadavků
 app.use((req, res, next) => {
     const timestamp = new Date().toISOString();
@@ -26,7 +27,11 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
 // Store user sessions (in production, use Redis or database)
+const userSessions = new Map();
+
+// Helper function to get movie/series title from IMDB ID
 async function getMovieTitle(imdbId) {
     try {
         // Use OMDB API to get movie title (free API)
@@ -51,7 +56,6 @@ async function getMovieTitle(imdbId) {
         return null;
     }
 }
-const userSessions = new Map();
 
 // Addon manifest
 const manifest = {
@@ -112,11 +116,9 @@ class TitulkyClient {
             
             if (contentEncoding === 'gzip') {
                 console.log('[LOGIN] Decompressing gzip content');
-                const zlib = require('zlib');
                 content = zlib.gunzipSync(response.data).toString('utf-8');
             } else if (contentEncoding === 'deflate') {
                 console.log('[LOGIN] Decompressing deflate content');
-                const zlib = require('zlib');
                 content = zlib.inflateSync(response.data).toString('utf-8');
             } else {
                 console.log('[LOGIN] No compression detected');
@@ -175,7 +177,7 @@ class TitulkyClient {
                     'Accept-Encoding': 'gzip, deflate'
                 },
                 timeout: 15000,
-                responseType: 'arraybuffer'  // Get raw data to handle compression
+                responseType: 'arraybuffer'
             });
 
             console.log(`[SEARCH] Response status: ${response.status}`);
@@ -187,11 +189,9 @@ class TitulkyClient {
             
             if (contentEncoding === 'gzip') {
                 console.log('[SEARCH] Decompressing gzip content');
-                const zlib = require('zlib');
                 content = zlib.gunzipSync(response.data).toString('utf-8');
             } else if (contentEncoding === 'deflate') {
                 console.log('[SEARCH] Decompressing deflate content');
-                const zlib = require('zlib');
                 content = zlib.inflateSync(response.data).toString('utf-8');
             } else {
                 console.log('[SEARCH] No compression detected');
@@ -448,6 +448,8 @@ app.options('*', (req, res) => {
     });
     res.status(200).end();
 });
+
+// Routes
 app.get('/', (req, res) => {
     const html = `
 <!DOCTYPE html>
@@ -857,141 +859,57 @@ app.get('/:config/subtitles/:type/:id*', async (req, res) => {
             client.lastUsed = Date.now();
         }
 
-        // Extract IMDB ID and create search query
-        const imdbId = id.replace('tt', '');
-        console.log(`[SUBTITLES] IMDB ID: ${imdbId}`);
+        // Extract IMDB ID and get movie/series title from OMDB API
+        let baseImdbId, season, episode;
         
-        // Create better search queries using movie/series names
+        // Parse different ID formats from Stremio
+        if (id.includes(':')) {
+            // Format: tt1234567:1:1 (series:season:episode)
+            const parts = id.split(':');
+            baseImdbId = parts[0].replace('tt', '');
+            season = parts[1];
+            episode = parts[2];
+            console.log(`[SUBTITLES] Series format: IMDB=${baseImdbId}, S${season}E${episode}`);
+        } else {
+            // Simple movie format: tt1234567
+            baseImdbId = id.replace('tt', '');
+            console.log(`[SUBTITLES] Movie format: IMDB=${baseImdbId}`);
+        }
+
+        console.log(`[SUBTITLES] IMDB ID: ${baseImdbId}`);
+        
+        // Get movie/series title from OMDB API
+        const movieInfo = await getMovieTitle(baseImdbId);
+        if (!movieInfo) {
+            console.log(`[SUBTITLES] Could not get title for IMDB ${baseImdbId}`);
+            return res.json({ subtitles: [] });
+        }
+        
+        // Create search queries based on the real title
         let searchQueries = [];
         
-        // Movie name mappings for common IMDB IDs
-        const movieNames = {
-            // Klasické filmy
-            '0816692': ['Interstellar', 'Interstelár', 'Hvězdný'],
-            '0111161': ['Shawshank Redemption', 'Vykoupení z věznice Shawshank', 'Shawshank'],
-            '0468569': ['Dark Knight', 'Temný rytíř', 'Batman'],
-            '0109830': ['Forrest Gump'],
-            '0137523': ['Fight Club', 'Klub rváčů'],
-            '0120737': ['Lord of the Rings', 'Pán prstenů', 'Fellowship'],
-            '0167260': ['Lord of the Rings Two Towers', 'Pán prstenů Dvě věže'],
-            '0171336': ['Lord of the Rings Return King', 'Pán prstenů Návrat krále'],
-            '0110912': ['Pulp Fiction', 'Historky z podsvětí'],
-            '0133093': ['Matrix'],
-            '0068646': ['Godfather', 'Kmotr'],
-            '0071562': ['Godfather Part II', 'Kmotr II'],
-            '0099685': ['Goodfellas', 'Chlapi do páru'],
-            
-            // Sci-Fi klasiky
-            '0076759': ['Star Wars', 'Hvězdné války'],
-            '0080684': ['Star Wars Empire Strikes Back', 'Hvězdné války Impérium vrací úder'],
-            '0086190': ['Star Wars Return of the Jedi', 'Hvězdné války Návrat krále'],
-            '0100802': ['Total Recall', 'Vzpomínky na budoucnost', 'Celková vzpomínka'],
-            '0078748': ['Alien', 'Vetřelec'],
-            '0090605': ['Aliens', 'Vetřelci'],
-            '0088763': ['Back to the Future', 'Návrat do budoucnosti'],
-            '0089881': ['Back to the Future Part II', 'Návrat do budoucnosti II'],
-            '0099088': ['Back to the Future Part III', 'Návrat do budoucnosti III'],
-            '0107290': ['Jurassic Park', 'Jurský park'],
-            '0062622': ['2001 A Space Odyssey', '2001 Vesmírná odysea'],
-            
-            // Akční filmy
-            '0108052': ['Schindlers List', 'Schindlerův seznam'],
-            '0102926': ['Silence of the Lambs', 'Mlčení jehňátek'],
-            '0120815': ['Saving Private Ryan', 'Zachraňte vojína Ryana'],
-            '0086250': ['Scarface', 'Zjizvená tvář'],
-            '0095016': ['Die Hard', 'Smrtonosná past'],
-            '0172495': ['Gladiator'],
-            '0253474': ['Pirates of the Caribbean', 'Piráti z Karibiku'],
-            '0371746': ['Iron Man', 'Železný muž'],
-            
-            // Thrillery a drama
-            '0114369': ['Se7en', 'Sedm'],
-            '0110413': ['Leon', 'Profesionál'],
-            '0482571': ['Prestige', 'Prestíž'],
-            '0434409': ['V for Vendetta', 'V jako Vendetta'],
-            '0338013': ['Eternal Sunshine', 'Věčný svit neposkvrněné mysli'],
-            '0361748': ['Inglourious Basterds', 'Hanební pancharti'],
-            '0477348': ['No Country for Old Men', 'Tady pro starce není místo'],
-            '1375666': ['Inception', 'Počátek'],
-            '0993846': ['Wolf of Wall Street', 'Vlk z Wall Street'],
-            '0119217': ['Good Will Hunting', 'Will Hunting'],
-            '0118799': ['Life is Beautiful', 'Život je krásný'],
-            '0120586': ['American Beauty', 'Americká krása'],
-            '0120667': ['Big Lebowski', 'Velký Lebowski'],
-            
-            // Horory a psychologické thrillery
-            '0081505': ['Shining', 'Osvícení'],
-            '0054215': ['Psycho'],
-            '0075314': ['Taxi Driver', 'Taxikář'],
-            '0073486': ['One Flew Over the Cuckoos Nest', 'Přelet nad kukaččím hnízdem'],
-            '0056592': ['Lawrence of Arabia', 'Lawrence z Arábie'],
-            '0053125': ['North by Northwest', 'Na sever severozápadní linkou'],
-            
-            // Novější filmy
-            '1856101': ['Blade Runner 2049'],
-            '0848228': ['Avengers'],
-            '4154756': ['Avengers Endgame', 'Avengers Konec hry'],
-            '4154664': ['Avengers Infinity War', 'Avengers Válka nekonečna'],
-            '2015381': ['Guardians of the Galaxy', 'Strážci galaxie'],
-            '3896198': ['Guardians of the Galaxy Vol 2', 'Strážci galaxie 2'],
-            '6334354': ['Top Gun Maverick'],
-            '1877830': ['Baby Driver'],
-            '8503618': ['Everything Everywhere All at Once'],
-            
-            // Populární seriály
-            '0944947': ['Game of Thrones', 'Hra o trůny'],
-            '0903747': ['Breaking Bad'],
-            '2306299': ['The Witcher', 'Zaklínač'],
-            '1399': ['Game of Thrones', 'Hra o trůny'],
-            '0141842': ['The Sopranos', 'Sopranos'],
-            '0108778': ['Friends', 'Přátelé'],
-            '0472954': ['Lost', 'Ztraceni'],
-            '1475582': ['Sherlock'],
-            '0386676': ['The Office', 'Kancelář'],
-            '1596363': ['Stranger Things'],
-            '7658402': ['The Umbrella Academy', 'Umbrella Academy'],
-            '8111088': ['The Last of Us'],
-            '1190634': ['The Boys'],
-            '5421602': ['Wednesday', 'Addams Family'],
-            '1405406': ['The Witcher', 'Zaklínač']
-        };
-        
         if (type === 'movie') {
-            // Always use movie names instead of IMDB IDs
-            if (movieNames[imdbId]) {
-                searchQueries = [...movieNames[imdbId]];
-            } else {
-                // For unknown movies, try to derive common names from IMDB ID
-                // This is a fallback - ideally you'd use OMDB/TMDB API here
-                searchQueries = [
-                    // Don't use IMDB ID at all, it rarely works on Titulky.com
-                    // Instead, log that we need to add this movie to our mapping
-                ];
-                console.log(`[SUBTITLES] WARNING: Movie IMDB ${imdbId} not in database. Consider adding it to movieNames mapping.`);
-                console.log(`[SUBTITLES] No search will be performed for unknown movie.`);
-                
-                // Return empty results for unmapped movies
-                return res.json({ subtitles: [] });
-            }
+            // For movies, search by title and title+year
+            searchQueries = [
+                movieInfo.title,
+                `${movieInfo.title} ${movieInfo.year}`,
+                movieInfo.title.replace(/[^\w\s]/g, ''), // Remove special characters
+            ];
         } else if (type === 'series') {
             // For series, we need episode info from the ID
-            const idParts = id.split(':');
-            if (idParts.length >= 4) {
-                const [, , season, episode] = idParts;
-                if (movieNames[imdbId]) {
-                    // Use series name with episode info
-                    searchQueries = [
-                        `${movieNames[imdbId][0]} S${season.padStart(2, '0')}E${episode.padStart(2, '0')}`,
-                        `${movieNames[imdbId][0]} ${season}x${episode}`
-                    ];
-                } else {
-                    searchQueries = [
-                        `${imdbId} S${season.padStart(2, '0')}E${episode.padStart(2, '0')}`,
-                        `${imdbId} ${season}x${episode}`
-                    ];
-                }
+            if (season && episode) {
+                console.log(`[SUBTITLES] Series: ${movieInfo.title} S${season}E${episode}`);
+                
+                searchQueries = [
+                    `${movieInfo.title} S${season.padStart(2, '0')}E${episode.padStart(2, '0')}`,
+                    `${movieInfo.title} ${season}x${episode.padStart(2, '0')}`,
+                    `${movieInfo.title} ${season}x${episode}`,
+                    `${movieInfo.title} S${season}E${episode}`,
+                    movieInfo.title // Fallback to just series name
+                ];
             } else {
-                searchQueries = movieNames[imdbId] || [imdbId];
+                // No episode info, just series name
+                searchQueries = [movieInfo.title];
             }
         }
 
@@ -1131,18 +1049,7 @@ app.post('/configure', async (req, res) => {
     });
 });
 
-// Test endpoint pro simulaci Stremio požadavku
-app.get('/simulate/:config/:type/:id', async (req, res) => {
-    const { config, type, id } = req.params;
-    
-    console.log(`[SIMULATE] Simulating Stremio request: ${type}/${id}`);
-    
-    // Redirectovat na skutečný subtitles endpoint
-    const redirectUrl = `/${config}/subtitles/${type}/${id}.json`;
-    console.log(`[SIMULATE] Redirecting to: ${redirectUrl}`);
-    
-    res.redirect(redirectUrl);
-});
+// Test endpoint pro ruční testování názvu filmu
 app.get('/test/:config/:query', async (req, res) => {
     const { config, query } = req.params;
     
@@ -1176,32 +1083,8 @@ app.get('/test/:config/:query', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
-app.get('/debug/:config', async (req, res) => {
-    const { config } = req.params;
-    
-    try {
-        const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
-        const { username } = decodedConfig;
-        
-        const client = userSessions.get(username);
-        const sessionExists = !!client;
-        const sessionAge = client ? Date.now() - client.lastUsed : null;
-        
-        res.json({
-            configValid: true,
-            username: username,
-            sessionExists: sessionExists,
-            sessionAge: sessionAge,
-            cookiesCount: client ? Object.keys(client.cookies).length : 0,
-            totalSessions: userSessions.size
-        });
-    } catch (error) {
-        res.json({
-            configValid: false,
-            error: error.message
-        });
-    }
-});
+
+// Health check with detailed info
 app.get('/health', (req, res) => {
     const sessionCount = userSessions.size;
     const uptime = process.uptime();
@@ -1212,6 +1095,31 @@ app.get('/health', (req, res) => {
         uptime: Math.floor(uptime),
         activeSessions: sessionCount,
         version: '1.0.0'
+    });
+});
+
+// Catch-all error handler
+app.use((error, req, res, next) => {
+    console.error('[ERROR] Unhandled error:', error.message);
+    console.error('[ERROR] Stack:', error.stack);
+    console.error('[ERROR] Request URL:', req.url);
+    console.error('[ERROR] Request headers:', req.headers);
+    
+    res.status(500).json({
+        error: 'Internal server error',
+        message: error.message,
+        url: req.url
+    });
+});
+
+// 404 handler with logging
+app.use((req, res) => {
+    console.log(`[404] Not found: ${req.method} ${req.url}`);
+    console.log(`[404] Headers:`, req.headers);
+    res.status(404).json({ 
+        error: 'Not found',
+        path: req.url,
+        method: req.method
     });
 });
 
