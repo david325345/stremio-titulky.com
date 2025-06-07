@@ -6,7 +6,23 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: false
+}));
+// Middleware pro logování všech požadavků
+app.use((req, res, next) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] ${req.method} ${req.url}`);
+    console.log(`[REQUEST] Headers:`, JSON.stringify(req.headers, null, 2));
+    if (req.body && Object.keys(req.body).length > 0) {
+        console.log(`[REQUEST] Body:`, req.body);
+    }
+    next();
+});
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 // Store user sessions (in production, use Redis or database)
@@ -22,7 +38,13 @@ const manifest = {
     resources: ['subtitles'],
     types: ['movie', 'series'],
     idPrefixes: ['tt'],
-    catalogs: []
+    catalogs: [],
+    behaviorHints: {
+        adult: false,
+        p2p: false,
+        configurable: true,
+        configurationRequired: true
+    }
 };
 
 class TitulkyClient {
@@ -792,7 +814,18 @@ app.post('/configure', async (req, res) => {
     });
 });
 
-// Test endpoint pro ruční testování
+// Test endpoint pro simulaci Stremio požadavku
+app.get('/simulate/:config/:type/:id', async (req, res) => {
+    const { config, type, id } = req.params;
+    
+    console.log(`[SIMULATE] Simulating Stremio request: ${type}/${id}`);
+    
+    // Redirectovat na skutečný subtitles endpoint
+    const redirectUrl = `/${config}/subtitles/${type}/${id}.json`;
+    console.log(`[SIMULATE] Redirecting to: ${redirectUrl}`);
+    
+    res.redirect(redirectUrl);
+});
 app.get('/test/:config/:query', async (req, res) => {
     const { config, query } = req.params;
     
