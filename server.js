@@ -213,10 +213,18 @@ class TitulkyClient {
                 
                 console.log(`[PARSE] Row ${index}: ${cells.length} cells`);
                 
-                // Debug: print cell contents for first few rows
+                // Debug: print all links in the row for first few rows
                 if (index < 3) {
                     cells.each((cellIndex, cell) => {
                         const cellText = $(cell).text().trim();
+                        const links = $(cell).find('a');
+                        if (links.length > 0) {
+                            links.each((linkIndex, link) => {
+                                const href = $(link).attr('href');
+                                const linkText = $(link).text().trim();
+                                console.log(`[PARSE] Row ${index}, Cell ${cellIndex}, Link ${linkIndex}: href="${href}", text="${linkText}"`);
+                            });
+                        }
                         console.log(`[PARSE] Row ${index}, Cell ${cellIndex}: "${cellText}"`);
                     });
                 }
@@ -227,8 +235,24 @@ class TitulkyClient {
                     return;
                 }
 
-                const linkElement = cells.eq(1).find('a');
-                const href = linkElement.attr('href');
+                // Find the link in any cell - search all cells for the main link
+                let linkElement = null;
+                let href = null;
+                
+                for (let i = 0; i < cells.length; i++) {
+                    const cellLinks = cells.eq(i).find('a');
+                    cellLinks.each((j, link) => {
+                        const linkHref = $(link).attr('href');
+                        if (linkHref && linkHref.includes('-') && linkHref.includes('.htm')) {
+                            linkElement = $(link);
+                            href = linkHref;
+                            console.log(`[PARSE] Row ${index}: Found main link in cell ${i}: ${href}`);
+                            return false; // Break out of each loop
+                        }
+                    });
+                    if (href) break; // Break out of for loop
+                }
+                
                 console.log(`[PARSE] Row ${index}: href = ${href}`);
                 
                 if (!href) {
@@ -243,15 +267,33 @@ class TitulkyClient {
                 }
 
                 const title = linkElement.text().trim();
-                const version = cells.eq(2).find('a').attr('title') || '';
-                const year = cells.eq(3).text().trim(); // Adjusted index
-                const downloads = parseInt(cells.eq(4).text().trim()) || 0; // Adjusted index
-                const langImg = cells.eq(5).find('img'); // Adjusted index
-                const lang = langImg.attr('alt') || '';
-                const size = parseFloat(cells.eq(6).text().trim()) || 0; // Adjusted index
-                const author = cells.eq(7).find('a').text().trim() || ''; // Adjusted index
+                
+                // Try to find other data in the cells
+                let version = '';
+                let year = '';
+                let downloads = 0;
+                let lang = '';
+                let size = 0;
+                let author = '';
+                
+                // Look for year (4 digits)
+                cells.each((i, cell) => {
+                    const cellText = $(cell).text().trim();
+                    if (/^\d{4}$/.test(cellText)) {
+                        year = cellText;
+                    }
+                    // Look for downloads (numbers)
+                    if (/^\d{1,6}$/.test(cellText) && parseInt(cellText) > 0) {
+                        downloads = Math.max(downloads, parseInt(cellText));
+                    }
+                    // Look for language flags
+                    const langImg = $(cell).find('img');
+                    if (langImg.length > 0) {
+                        lang = langImg.attr('alt') || '';
+                    }
+                });
 
-                console.log(`[PARSE] Row ${index}: title="${title}", lang="${lang}", downloads=${downloads}`);
+                console.log(`[PARSE] Row ${index}: title="${title}", lang="${lang}", downloads=${downloads}, year="${year}"`);
 
                 // Convert language codes
                 let language = lang;
