@@ -791,3 +791,432 @@ app.get('/', (req, res) => {
                     const testLink = document.createElement('a');
                     testLink.href = data.testUrl;
                     testLink.target = '_blank';
+                    testLink.textContent = 'Test manifest';
+                    testLink.className = 'install-btn';
+                    testLink.style.backgroundColor = '#ff9800';
+                    testLink.style.marginLeft = '10px';
+                    resultMessage.appendChild(document.createElement('br'));
+                    resultMessage.appendChild(testLink);
+                } else {
+                    result.className = 'result error';
+                    resultMessage.innerHTML = \`
+                        <strong>❌ Chyba:</strong><br>
+                        \${data.error || 'Neočekávaná chyba při vytváření konfigurace'}
+                    \`;
+                    installLink.style.display = 'none';
+                }
+            } catch (error) {
+                result.className = 'result error';
+                resultMessage.innerHTML = \`
+                    <strong>❌ Chyba spojení:</strong><br>
+                    Nepodařilo se spojit se serverem. Zkuste to později.
+                \`;
+                installLink.style.display = 'none';
+            }
+            
+            // Hide loading state
+            submitBtn.style.display = 'block';
+            loading.style.display = 'none';
+            result.style.display = 'block';
+        });
+
+        document.getElementById('installLink').addEventListener('click', (e) => {
+            setTimeout(() => {
+                alert('Addon byl úspěšně nainstalován! Můžete jej najít v sekci "Addons" ve Stremio.');
+            }, 1000);
+        });
+    </script>
+</body>
+</html>`;
+    res.send(html);
+});
+
+app.get('/manifest.json', (req, res) => {
+    console.log('[MANIFEST] Basic manifest requested');
+    res.set({
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type'
+    });
+    res.json(manifest);
+});
+
+app.get('/:config/manifest.json', (req, res) => {
+    const config = req.params.config;
+    console.log(`[MANIFEST] Configured manifest requested, config length: ${config.length}`);
+    try {
+        const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
+        console.log(`[MANIFEST] Config decoded for user: ${decodedConfig.username}`);
+        
+        const configuredManifest = {
+            ...manifest,
+            id: `com.titulky.subtitles.${decodedConfig.username}`,
+            name: `${manifest.name} (${decodedConfig.username})`,
+            description: `${manifest.description} - User: ${decodedConfig.username}`
+        };
+        
+        res.set({
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type'
+        });
+        
+        res.json(configuredManifest);
+    } catch (error) {
+        console.error('[MANIFEST] Invalid configuration:', error.message);
+        res.status(400).json({ error: 'Invalid configuration' });
+    }
+});
+
+app.get('/:config/subtitles/:type/:id*', async (req, res) => {
+    const { config, type } = req.params;
+    let fullPath = req.params.id + (req.params[0] || ''); // Capture everything after :id
+    
+    console.log(`[SUBTITLES] Raw path: "${fullPath}"`);
+    
+    // Decode URL-encoded path
+    fullPath = decodeURIComponent(fullPath);
+    console.log(`[SUBTITLES] Decoded path: "${fullPath}"`);
+    
+    // Extract just the ID part (before any /)
+    let id = fullPath.split('/')[0];
+    
+    // Remove query parameters from ID (after &)
+    id = id.split('&')[0];
+    
+    // Remove .json extension if present
+    id = id.replace('.json', '');
+    
+    console.log(`[SUBTITLES] Request: type=${type}, id=${id}, config=${config.substring(0, 20)}...`);
+    console.log(`[SUBTITLES] Cleaned ID: "${id}"`);
+    console.log(`[SUBTITLES] ID parts: [${id.split(':')}]`);
+    
+    try {
+        const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
+        const { username, password } = decodedConfig;
+
+        console.log(`[SUBTITLES] Decoded config for user: ${username}`);
+
+        if (!username || !password) {
+            console.log('[SUBTITLES] Missing credentials in config');
+            return res.status(400).json({ error: 'Missing credentials' });
+        }
+
+        // Get or create client session
+        let client = userSessions.get(username);
+        if (!client) {
+            console.log(`[SUBTITLES] No session found for ${username}, creating new session`);
+            client = new TitulkyClient();
+            const loginSuccess = await client.login(username, password);
+            if (!loginSuccess) {
+                console.log(`[SUBTITLES] Login failed for ${username}`);
+                return res.status(401).json({ error: 'Login failed' });
+            }
+            userSessions.set(username, client);
+            console.log(`[SUBTITLES] Session created for ${username}`);
+        } else {
+            console.log(`[SUBTITLES] Using existing session for ${username}`);
+            client.lastUsed = Date.now();
+        }
+
+        // Extract IMDB ID and get movie/series title from OMDB API
+        let baseImdbId, season, episode;
+        
+        // Parse different ID formats from Stremio
+        if (id.includes(':')) {
+            // Format: tt1234567:1:1 (series:season:episode)
+            const parts = id.split(':');
+            baseImdbId = parts[0].replace('tt', '');
+            season = parts[1];
+            episode = parts[2];
+            console.log(`[SUBTITLES] Series format: IMDB=${baseImdbId}, S${season}E${episode}`);
+        } else {
+            // Simple movie format: tt1234567
+            baseImdbId = id.replace('tt', '');
+            console.log(`[SUBTITLES] Movie format: IMDB=${baseImdbId}`);
+        }
+
+        console.log(`[SUBTITLES] IMDB ID: ${baseImdbId}`);
+        
+        // Get movie/series title from OMDB API
+        const movieInfo = await getMovieTitle(baseImdbId);
+        if (!movieInfo) {
+            console.log(`[SUBTITLES] Could not get title for IMDB ${baseImdbId}`);
+            return res.json({ subtitles: [] });
+        }
+        
+        // Create search queries based on the real title
+        let searchQueries = [];
+        
+        if (type === 'movie') {
+            // For movies, search by title and title+year
+            searchQueries = [
+                movieInfo.title,
+                `${movieInfo.title} ${movieInfo.year}`,
+                movieInfo.title.replace(/[^\w\s]/g, ''), // Remove special characters
+            ];
+        } else if (type === 'series') {
+            // For series, we need episode info from the ID
+            if (season && episode) {
+                console.log(`[SUBTITLES] Series: ${movieInfo.title} S${season}E${episode}`);
+                
+                searchQueries = [
+                    `${movieInfo.title} S${season.padStart(2, '0')}E${episode.padStart(2, '0')}`,
+                    `${movieInfo.title} ${season}x${episode.padStart(2, '0')}`,
+                    `${movieInfo.title} ${season}x${episode}`,
+                    `${movieInfo.title} S${season}E${episode}`,
+                    movieInfo.title // Fallback to just series name
+                ];
+            } else {
+                // No episode info, just series name
+                searchQueries = [movieInfo.title];
+            }
+        }
+
+        console.log(`[SUBTITLES] Search queries: ${searchQueries.join(', ')}`);
+
+        let allSubtitles = [];
+        
+        // Try each search query until we find results
+        for (let i = 0; i < searchQueries.length; i++) {
+            const query = searchQueries[i];
+            console.log(`[SUBTITLES] Trying search query ${i+1}/${searchQueries.length}: "${query}"`);
+            
+            try {
+                const subtitles = await client.searchSubtitles(query);
+                
+                if (subtitles.length > 0) {
+                    console.log(`[SUBTITLES] SUCCESS: Found ${subtitles.length} results for query: "${query}"`);
+                    allSubtitles = subtitles;
+                    break;
+                } else {
+                    console.log(`[SUBTITLES] No results for query: "${query}"`);
+                }
+            } catch (searchError) {
+                console.error(`[SUBTITLES] Search failed for query "${query}":`, searchError.message);
+                // Continue with next query
+            }
+        }
+
+        console.log(`[SUBTITLES] Total subtitles found: ${allSubtitles.length}`);
+        
+        const stremioSubtitles = allSubtitles.map(sub => {
+            const subtitle = {
+                id: `${sub.id}:${sub.linkFile}`,
+                url: `${req.protocol}://${req.get('host')}/${config}/subtitle/${sub.id}/${encodeURIComponent(sub.linkFile)}.srt`,
+                lang: sub.language.toLowerCase() === 'czech' ? 'cs' : 
+                      sub.language.toLowerCase() === 'slovak' ? 'sk' : 'cs',
+                name: `${sub.title}${sub.version ? ` (${sub.version})` : ''}${sub.author ? ` - ${sub.author}` : ''}`,
+                rating: sub.rating
+            };
+            console.log(`[SUBTITLES] Mapped subtitle: ${subtitle.name} (${subtitle.lang})`);
+            return subtitle;
+        });
+
+        console.log(`[SUBTITLES] Returning ${stremioSubtitles.length} subtitles to Stremio`);
+        res.json({ subtitles: stremioSubtitles });
+        
+    } catch (error) {
+        console.error('[SUBTITLES] Error:', error.message);
+        console.error('[SUBTITLES] Stack:', error.stack);
+        res.status(500).json({ 
+            error: 'Failed to fetch subtitles',
+            details: error.message 
+        });
+    }
+});
+
+app.get('/:config/subtitle/:id/:linkFile', async (req, res) => {
+    const { config, id, linkFile } = req.params;
+    
+    console.log(`[DOWNLOAD] Request: id=${id}, linkFile=${linkFile}`);
+    
+    try {
+        const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
+        const { username } = decodedConfig;
+
+        console.log(`[DOWNLOAD] Download request for user: ${username}`);
+
+        const client = userSessions.get(username);
+        if (!client) {
+            console.log(`[DOWNLOAD] No session found for ${username}`);
+            return res.status(401).json({ error: 'Session expired' });
+        }
+
+        const decodedLinkFile = decodeURIComponent(linkFile.replace('.srt', ''));
+        console.log(`[DOWNLOAD] Decoded link file: ${decodedLinkFile}`);
+        
+        const subtitleData = await client.downloadSubtitle(id, decodedLinkFile);
+        
+        // Check if we got SRT content (string) or ZIP data (buffer)
+        if (typeof subtitleData === 'string') {
+            console.log(`[DOWNLOAD] Returning SRT content (${subtitleData.length} characters)`);
+            
+            res.set({
+                'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="subtitle_${id}.srt"`,
+                'Content-Length': Buffer.byteLength(subtitleData, 'utf-8')
+            });
+            res.send(subtitleData);
+        } else {
+            console.log(`[DOWNLOAD] Returning ZIP data (${subtitleData.length} bytes)`);
+            
+            res.set({
+                'Content-Type': 'application/zip',
+                'Content-Disposition': `attachment; filename="subtitle_${id}.zip"`,
+                'Content-Length': subtitleData.length
+            });
+            res.send(subtitleData);
+        }
+    } catch (error) {
+        console.error('[DOWNLOAD] Error:', error.message);
+        console.error('[DOWNLOAD] Stack:', error.stack);
+        res.status(500).json({ 
+            error: 'Failed to download subtitle',
+            details: error.message 
+        });
+    }
+});
+
+app.post('/configure', async (req, res) => {
+    const { username, password } = req.body;
+    
+    if (!username || !password) {
+        return res.status(400).json({ error: 'Username and password required' });
+    }
+
+    // Test login before creating config
+    try {
+        const testClient = new TitulkyClient();
+        const loginSuccess = await testClient.login(username, password);
+        
+        if (!loginSuccess) {
+            return res.status(401).json({ error: 'Neplatné přihlašovací údaje' });
+        }
+        
+        // Store successful session
+        userSessions.set(username, testClient);
+        console.log(`[CONFIGURE] Stored session for ${username}`);
+        
+    } catch (error) {
+        console.error('Login test error:', error.message);
+        return res.status(500).json({ error: 'Chyba při ověřování přihlašovacích údajů' });
+    }
+
+    const config = Buffer.from(JSON.stringify({ username, password })).toString('base64');
+    
+    // Create both stremio:// and https:// URLs for testing
+    const baseUrl = req.get('host');
+    const installUrl = `stremio://${baseUrl}/${config}/manifest.json`;
+    const testUrl = `${req.protocol}://${baseUrl}/${config}/manifest.json`;
+    
+    console.log(`[CONFIGURE] Created config for ${username}, config: ${config.substring(0, 20)}...`);
+    
+    res.json({ 
+        success: true, 
+        installUrl,
+        testUrl,
+        config: config,
+        message: 'Configuration created successfully'
+    });
+});
+
+// Test endpoint pro ruční testování názvu filmu
+app.get('/test/:config/:query', async (req, res) => {
+    const { config, query } = req.params;
+    
+    console.log(`[TEST] Manual test request: query="${query}"`);
+    
+    try {
+        const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
+        const { username, password } = decodedConfig;
+
+        let client = userSessions.get(username);
+        if (!client) {
+            console.log(`[TEST] Creating new session for ${username}`);
+            client = new TitulkyClient();
+            const loginSuccess = await client.login(username, password);
+            if (!loginSuccess) {
+                return res.status(401).json({ error: 'Login failed' });
+            }
+            userSessions.set(username, client);
+        }
+
+        const subtitles = await client.searchSubtitles(decodeURIComponent(query));
+        
+        res.json({
+            success: true,
+            query: decodeURIComponent(query),
+            found: subtitles.length,
+            subtitles: subtitles.slice(0, 5) // First 5 results
+        });
+    } catch (error) {
+        console.error('[TEST] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Health check with detailed info
+app.get('/health', (req, res) => {
+    const sessionCount = userSessions.size;
+    const uptime = process.uptime();
+    
+    res.json({ 
+        status: 'OK', 
+        timestamp: new Date().toISOString(),
+        uptime: Math.floor(uptime),
+        activeSessions: sessionCount,
+        version: '1.0.0'
+    });
+});
+
+// Catch-all error handler
+app.use((error, req, res, next) => {
+    console.error('[ERROR] Unhandled error:', error.message);
+    console.error('[ERROR] Stack:', error.stack);
+    console.error('[ERROR] Request URL:', req.url);
+    console.error('[ERROR] Request headers:', req.headers);
+    
+    res.status(500).json({
+        error: 'Internal server error',
+        message: error.message,
+        url: req.url
+    });
+});
+
+// 404 handler with logging
+app.use((req, res) => {
+    console.log(`[404] Not found: ${req.method} ${req.url}`);
+    console.log(`[404] Headers:`, req.headers);
+    res.status(404).json({ 
+        error: 'Not found',
+        path: req.url,
+        method: req.method
+    });
+});
+
+// Clean up expired sessions every hour
+setInterval(() => {
+    const oneHour = 60 * 60 * 1000;
+    const now = Date.now();
+    
+    console.log(`[CLEANUP] Checking ${userSessions.size} sessions for cleanup`);
+    
+    for (const [username, session] of userSessions.entries()) {
+        if (now - session.lastUsed > oneHour) {
+            console.log(`[CLEANUP] Removing expired session for ${username}`);
+            userSessions.delete(username);
+        }
+    }
+    
+    console.log(`[CLEANUP] ${userSessions.size} sessions remaining after cleanup`);
+}, 60 * 60 * 1000);
+
+app.listen(PORT, () => {
+    console.log(`Titulky.com Stremio Addon running on port ${PORT}`);
+    console.log(`Manifest URL: http://localhost:${PORT}/manifest.json`);
+    console.log(`Health check: http://localhost:${PORT}/health`);
+    console.log('Debug logging enabled');
+});
