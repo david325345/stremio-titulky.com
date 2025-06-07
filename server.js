@@ -733,18 +733,26 @@ app.get('/:config/manifest.json', (req, res) => {
 
 app.get('/:config/subtitles/:type/:id*', async (req, res) => {
     const { config, type } = req.params;
-    let id = req.params.id + (req.params[0] || ''); // Capture everything after :id
+    let fullPath = req.params.id + (req.params[0] || ''); // Capture everything after :id
     
-    // Decode URL-encoded ID and remove query parameters
-    id = decodeURIComponent(id);
-    // Remove query parameters like videoHash and videoSize
+    console.log(`[SUBTITLES] Raw path: "${fullPath}"`);
+    
+    // Decode URL-encoded path
+    fullPath = decodeURIComponent(fullPath);
+    console.log(`[SUBTITLES] Decoded path: "${fullPath}"`);
+    
+    // Extract just the ID part (before any /)
+    let id = fullPath.split('/')[0];
+    
+    // Remove query parameters from ID (after &)
     id = id.split('&')[0];
+    
     // Remove .json extension if present
     id = id.replace('.json', '');
     
     console.log(`[SUBTITLES] Request: type=${type}, id=${id}, config=${config.substring(0, 20)}...`);
-    console.log(`[SUBTITLES] Full ID received: "${id}"`);
-    console.log(`[SUBTITLES] ID parts: ${id.split(':')}`);
+    console.log(`[SUBTITLES] Cleaned ID: "${id}"`);
+    console.log(`[SUBTITLES] ID parts: [${id.split(':')}]`);
     
     try {
         const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
