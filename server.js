@@ -1,8 +1,25 @@
+/*
+PACKAGE.JSON DEPENDENCIES:
+{
+  "name": "stremio-titulky-addon",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.4.0",
+    "cheerio": "^1.0.0-rc.12",
+    "cors": "^2.8.5",
+    "adm-zip": "^0.5.10"
+  }
+}
+*/
+
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const cors = require('cors');
 const zlib = require('zlib');
+const AdmZip = require('adm-zip');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -424,7 +441,52 @@ class TitulkyClient {
             });
 
             console.log(`[DOWNLOAD] Downloaded ${fileResponse.data.length} bytes`);
-            return fileResponse.data;
+            
+            // Extract SRT from ZIP archive
+            try {
+                console.log('[DOWNLOAD] Extracting SRT from ZIP archive');
+                const zip = new AdmZip(fileResponse.data);
+                const zipEntries = zip.getEntries();
+                
+                console.log(`[DOWNLOAD] ZIP contains ${zipEntries.length} files`);
+                
+                // Look for SRT file in the archive
+                let srtContent = null;
+                for (const entry of zipEntries) {
+                    console.log(`[DOWNLOAD] Found file in ZIP: ${entry.entryName}`);
+                    
+                    if (entry.entryName.toLowerCase().endsWith('.srt')) {
+                        console.log(`[DOWNLOAD] Extracting SRT file: ${entry.entryName}`);
+                        srtContent = entry.getData().toString('utf-8');
+                        break;
+                    }
+                }
+                
+                if (!srtContent) {
+                    // If no SRT found, try to extract any text file
+                    for (const entry of zipEntries) {
+                        if (!entry.isDirectory && entry.entryName.includes('.')) {
+                            console.log(`[DOWNLOAD] Extracting text file: ${entry.entryName}`);
+                            srtContent = entry.getData().toString('utf-8');
+                            break;
+                        }
+                    }
+                }
+                
+                if (srtContent) {
+                    console.log(`[DOWNLOAD] Successfully extracted SRT content (${srtContent.length} characters)`);
+                    return srtContent;
+                } else {
+                    console.log('[DOWNLOAD] No SRT file found in ZIP archive');
+                    throw new Error('No SRT file found in archive');
+                }
+                
+            } catch (zipError) {
+                console.error('[DOWNLOAD] ZIP extraction error:', zipError.message);
+                console.log('[DOWNLOAD] Falling back to raw ZIP data');
+                return fileResponse.data;
+            }
+            
         } catch (error) {
             console.error('[DOWNLOAD] Download error:', error.message);
             throw error;
@@ -988,14 +1050,26 @@ app.get('/:config/subtitle/:id/:linkFile', async (req, res) => {
         
         const subtitleData = await client.downloadSubtitle(id, decodedLinkFile);
         
-        console.log(`[DOWNLOAD] Downloaded ${subtitleData.length} bytes`);
-        
-        res.set({
-            'Content-Type': 'application/zip',
-            'Content-Disposition': `attachment; filename="subtitle_${id}.zip"`,
-            'Content-Length': subtitleData.length
-        });
-        res.send(subtitleData);
+        // Check if we got SRT content (string) or ZIP data (buffer)
+        if (typeof subtitleData === 'string') {
+            console.log(`[DOWNLOAD] Returning SRT content (${subtitleData.length} characters)`);
+            
+            res.set({
+                'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="subtitle_${id}.srt"`,
+                'Content-Length': Buffer.byteLength(subtitleData, 'utf-8')
+            });
+            res.send(subtitleData);
+        } else {
+            console.log(`[DOWNLOAD] Returning ZIP data (${subtitleData.length} bytes)`);
+            
+            res.set({
+                'Content-Type': 'application/zip',
+                'Content-Disposition': `attachment; filename="subtitle_${id}.zip"`,
+                'Content-Length': subtitleData.length
+            });
+            res.send(subtitleData);
+        }
     } catch (error) {
         console.error('[DOWNLOAD] Error:', error.message);
         console.error('[DOWNLOAD] Stack:', error.stack);

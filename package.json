@@ -2,10 +2,10 @@
   "name": "stremio-titulky-addon",
   "version": "1.0.0",
   "description": "Stremio addon for Czech and Slovak subtitles from Titulky.com",
-  "main": "server.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js",
+    "start": "node index.js",
+    "dev": "nodemon index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -22,9 +22,21 @@
     "express": "^4.18.2",
     "axios": "^1.6.0",
     "cheerio": "^1.0.0-rc.12",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "adm-zip": "^0.5.10"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
   },
   "engines": {
-    "node": ">=18.0.0"
-  }
+    "node": ">=14.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/stremio-titulky-addon.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/stremio-titulky-addon/issues"
+  },
+  "homepage": "https://github.com/yourusername/stremio-titulky-addon#readme"
 }
