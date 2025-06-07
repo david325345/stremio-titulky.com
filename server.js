@@ -118,42 +118,9 @@ async function getMovieTitle(imdbId) {
 
 // Helper function to create fallback SRT content when captcha is detected
 function createFallbackSRT(title, language = 'cs') {
-    const messages = {
-        cs: {
-            line1: "Bohužel byl detekován CAPTCHA na Titulky.com",
-            line2: "Prosím navštivte Titulky.com a stáhněte titulky ručně",
-            line3: `Hledejte: ${title}`,
-            line4: "Omlouváme se za nepříjemnosti"
-        },
-        sk: {
-            line1: "Bohužiaľ bol detekovaný CAPTCHA na Titulky.com",
-            line2: "Prosím navštívte Titulky.com a stiahnite titulky ručne",
-            line3: `Hľadajte: ${title}`,
-            line4: "Ospravedlňujeme sa za nepríjemnosti"
-        }
-    };
-    
-    const msg = messages[language] || messages.cs;
-    
     return `1
-00:00:10,000 --> 00:00:15,000
-${msg.line1}
-
-2
-00:00:16,000 --> 00:00:21,000
-${msg.line2}
-
-3
-00:00:22,000 --> 00:00:27,000
-${msg.line3}
-
-4
-00:00:28,000 --> 00:00:33,000
-${msg.line4}
-
-5
-00:00:34,000 --> 00:00:39,000
-www.titulky.com
+00:00:01,000 --> 00:05:00,000
+Dosáhli jste maximální počet stažení 25 za den. Reset limitu proběhne zítra.
 `;
 }
 
@@ -851,8 +818,8 @@ app.get('/', (req, res) => {
         </div>
         
         <div class="warning">
-            <strong>⚠️ Pozor na CAPTCHA:</strong><br>
-            Pokud Titulky.com zobrazí CAPTCHA, addon automaticky poskytne náhradní SRT soubor s instrukcemi pro ruční stažení.
+            <strong>⚠️ Limit stažení:</strong><br>
+            Titulky.com má limit 25 stažení za den. Po překročení limitu se zobrazí speciální SRT soubor s upozorněním.
         </div>
         
         <div class="info">
@@ -864,7 +831,7 @@ app.get('/', (req, res) => {
                 <li>Addon bude dostupný v sekci Addons ve Stremio</li>
                 <li>Titulky se automaticky zobrazí při přehrávání filmů a seriálů</li>
                 <li><strong>Keep-Alive:</strong> Addon se automaticky udržuje aktivní na Render.com</li>
-                <li><strong>CAPTCHA fallback:</strong> Když je detekována CAPTCHA, zobrazí se náhradní titulky s instrukcemi</li>
+                <li><strong>Limit stažení:</strong> Po dosažení 25 stažení za den se zobrazí upozornění na 5 minut</li>
             </ul>
         </div>
     </div>
@@ -1087,9 +1054,9 @@ app.get('/:config/subtitles/:type/:id*', async (req, res) => {
             
             const fallbackSubtitle = {
                 id: 'captcha_fallback',
-                url: `${req.protocol}://${req.get('host')}/${config}/fallback-subtitle/${encodeURIComponent(fallbackTitle)}.srt`,
+                url: `${req.protocol}://${req.get('host')}/${config}/fallback-subtitle/limit-reached.srt`,
                 lang: 'cs',
-                name: '⚠️ CAPTCHA detected - Manual download required',
+                name: '⚠️ Dosáhli jste max. 25 stažení za den',
                 rating: 1
             };
             
@@ -1146,9 +1113,9 @@ app.get('/:config/subtitles/:type/:id*', async (req, res) => {
                     
                     const fallbackSubtitle = {
                         id: 'captcha_fallback',
-                        url: `${req.protocol}://${req.get('host')}/${config}/fallback-subtitle/${encodeURIComponent(fallbackTitle)}.srt`,
+                        url: `${req.protocol}://${req.get('host')}/${config}/fallback-subtitle/limit-reached.srt`,
                         lang: 'cs',
-                        name: '⚠️ CAPTCHA detected - Manual download required',
+                        name: '⚠️ Dosáhli jste max. 25 stažení za den',
                         rating: 1
                     };
                     
@@ -1197,18 +1164,18 @@ app.get('/:config/subtitles/:type/:id*', async (req, res) => {
 });
 
 // New route for fallback subtitles when captcha is detected
-app.get('/:config/fallback-subtitle/:title', (req, res) => {
-    const { title } = req.params;
-    const decodedTitle = decodeURIComponent(title.replace('.srt', ''));
+app.get('/:config/fallback-subtitle/:filename', (req, res) => {
+    const { filename } = req.params;
     
-    console.log(`[FALLBACK] Generating fallback subtitle for: ${decodedTitle}`);
+    console.log(`[FALLBACK] Generating fallback subtitle: ${filename}`);
     
     try {
-        const fallbackContent = createFallbackSRT(decodedTitle, 'cs');
+        // Use same fallback content for all cases
+        const fallbackContent = createFallbackSRT('', 'cs');
         
         res.set({
             'Content-Type': 'text/plain; charset=utf-8',
-            'Content-Disposition': `attachment; filename="captcha_fallback.srt"`,
+            'Content-Disposition': `attachment; filename="limit_reached.srt"`,
             'Content-Length': Buffer.byteLength(fallbackContent, 'utf-8')
         });
         
@@ -1268,23 +1235,12 @@ app.get('/:config/subtitle/:id/:linkFile', async (req, res) => {
             if (downloadError.message === 'CAPTCHA_DETECTED') {
                 console.log(`[DOWNLOAD] CAPTCHA detected - generating fallback SRT for subtitle ${id}`);
                 
-                // Try to get movie title for better fallback content
-                let fallbackTitle = `Subtitle ${id}`;
-                try {
-                    // Extract movie info from the linkFile if possible
-                    const titleFromLink = decodedLinkFile.replace(/-/g, ' ').replace(/\d+/g, '').trim();
-                    if (titleFromLink.length > 3) {
-                        fallbackTitle = titleFromLink;
-                    }
-                } catch (e) {
-                    console.log('[DOWNLOAD] Could not extract title from linkFile');
-                }
-                
-                const fallbackContent = createFallbackSRT(fallbackTitle, 'cs');
+                // Use same fallback content for all cases
+                const fallbackContent = createFallbackSRT('', 'cs');
                 
                 res.set({
                     'Content-Type': 'text/plain; charset=utf-8',
-                    'Content-Disposition': `attachment; filename="captcha_fallback_${id}.srt"`,
+                    'Content-Disposition': `attachment; filename="limit_reached_${id}.srt"`,
                     'Content-Length': Buffer.byteLength(fallbackContent, 'utf-8')
                 });
                 
