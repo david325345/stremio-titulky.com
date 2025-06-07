@@ -735,6 +735,8 @@ app.get('/:config/subtitles/:type/:id.json', async (req, res) => {
     const { config, type, id } = req.params;
     
     console.log(`[SUBTITLES] Request: type=${type}, id=${id}, config=${config.substring(0, 20)}...`);
+    console.log(`[SUBTITLES] Full ID received: "${id}"`);
+    console.log(`[SUBTITLES] ID parts: ${id.split(':')}`);
     
     try {
         const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
