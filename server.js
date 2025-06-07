@@ -521,10 +521,22 @@ app.get('/', (req, res) => {
                     result.className = 'result success';
                     resultMessage.innerHTML = \`
                         <strong>✅ Konfigurace úspěšně vytvořena!</strong><br>
+                        <small>Config: \${data.config.substring(0, 30)}...</small><br>
                         Nyní můžete nainstalovat addon do Stremio.
                     \`;
                     installLink.href = data.installUrl;
                     installLink.style.display = 'inline-block';
+                    
+                    // Add test link for debugging
+                    const testLink = document.createElement('a');
+                    testLink.href = data.testUrl;
+                    testLink.target = '_blank';
+                    testLink.textContent = 'Test manifest (debug)';
+                    testLink.className = 'install-btn';
+                    testLink.style.backgroundColor = '#ff9800';
+                    testLink.style.marginLeft = '10px';
+                    resultMessage.appendChild(document.createElement('br'));
+                    resultMessage.appendChild(testLink);
                 } else {
                     result.className = 'result error';
                     resultMessage.innerHTML = \`
@@ -752,17 +764,30 @@ app.post('/configure', async (req, res) => {
         if (!loginSuccess) {
             return res.status(401).json({ error: 'Neplatné přihlašovací údaje' });
         }
+        
+        // Store successful session
+        userSessions.set(username, testClient);
+        console.log(`[CONFIGURE] Stored session for ${username}`);
+        
     } catch (error) {
         console.error('Login test error:', error.message);
         return res.status(500).json({ error: 'Chyba při ověřování přihlašovacích údajů' });
     }
 
     const config = Buffer.from(JSON.stringify({ username, password })).toString('base64');
-    const installUrl = `stremio://${req.get('host')}/${config}/manifest.json`;
+    
+    // Create both stremio:// and https:// URLs for testing
+    const baseUrl = req.get('host');
+    const installUrl = `stremio://${baseUrl}/${config}/manifest.json`;
+    const testUrl = `${req.protocol}://${baseUrl}/${config}/manifest.json`;
+    
+    console.log(`[CONFIGURE] Created config for ${username}, config: ${config.substring(0, 20)}...`);
     
     res.json({ 
         success: true, 
         installUrl,
+        testUrl,
+        config: config,
         message: 'Configuration created successfully'
     });
 });
