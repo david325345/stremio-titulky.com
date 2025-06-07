@@ -43,8 +43,8 @@ const manifest = {
     behaviorHints: {
         adult: false,
         p2p: false,
-        configurable: true,
-        configurationRequired: true
+        configurable: false,
+        configurationRequired: false
     }
 };
 
@@ -363,7 +363,16 @@ class TitulkyClient {
     }
 }
 
-// Routes
+// OPTIONS handler pro CORS
+app.options('*', (req, res) => {
+    res.set({
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Max-Age': '86400'
+    });
+    res.status(200).end();
+});
 app.get('/', (req, res) => {
     const html = `
 <!DOCTYPE html>
@@ -625,16 +634,25 @@ app.get('/', (req, res) => {
                     resultMessage.innerHTML = \`
                         <strong>✅ Konfigurace úspěšně vytvořena!</strong><br>
                         <small>Config: \${data.config.substring(0, 30)}...</small><br>
-                        Nyní můžete nainstalovat addon do Stremio.
+                        <br>
+                        <strong>📋 Kroky pro instalaci:</strong><br>
+                        1. Zkopírujte URL níže<br>
+                        2. Otevřete Stremio → Settings → Addons<br>
+                        3. Klikněte "Community addons"<br>
+                        4. Klikněte "Add addon URL"<br>
+                        5. Vložte URL (bez stremio:// prefixu)<br>
+                        <br>
+                        <input type="text" value="\${data.testUrl}" readonly style="width: 100%; margin: 10px 0; padding: 5px; font-size: 12px; border: 1px solid #ddd; border-radius: 4px;" onclick="this.select()">
                     \`;
                     installLink.href = data.installUrl;
                     installLink.style.display = 'inline-block';
+                    installLink.textContent = 'Zkusit automatickou instalaci';
                     
                     // Add test link for debugging
                     const testLink = document.createElement('a');
                     testLink.href = data.testUrl;
                     testLink.target = '_blank';
-                    testLink.textContent = 'Test manifest (debug)';
+                    testLink.textContent = 'Test manifest';
                     testLink.className = 'install-btn';
                     testLink.style.backgroundColor = '#ff9800';
                     testLink.style.marginLeft = '10px';
@@ -676,6 +694,12 @@ app.get('/', (req, res) => {
 
 app.get('/manifest.json', (req, res) => {
     console.log('[MANIFEST] Basic manifest requested');
+    res.set({
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type'
+    });
     res.json(manifest);
 });
 
@@ -685,10 +709,21 @@ app.get('/:config/manifest.json', (req, res) => {
     try {
         const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
         console.log(`[MANIFEST] Config decoded for user: ${decodedConfig.username}`);
+        
         const configuredManifest = {
             ...manifest,
-            name: `${manifest.name} (${decodedConfig.username})`
+            id: `com.titulky.subtitles.${decodedConfig.username}`,
+            name: `${manifest.name} (${decodedConfig.username})`,
+            description: `${manifest.description} - User: ${decodedConfig.username}`
         };
+        
+        res.set({
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type'
+        });
+        
         res.json(configuredManifest);
     } catch (error) {
         console.error('[MANIFEST] Invalid configuration:', error.message);
