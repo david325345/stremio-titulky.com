@@ -48,7 +48,105 @@ app.use(express.urlencoded({ extended: true }));
 // Store user sessions (in production, use Redis or database)
 const userSessions = new Map();
 
-// Helper function to get movie/series title from IMDB ID
+// Helper function to extract version info from filename
+function extractVersionInfo(filename) {
+    if (!filename) return [];
+    
+    console.log(`[VERSION] Analyzing filename: "${filename}"`);
+    
+    const versionKeywords = [];
+    const upperFilename = filename.toUpperCase();
+    
+    // Video quality indicators
+    if (upperFilename.includes('2160P') || upperFilename.includes('4K') || upperFilename.includes('UHD')) {
+        versionKeywords.push('2160p', '4K', 'UHD');
+    } else if (upperFilename.includes('1080P')) {
+        versionKeywords.push('1080p');
+    } else if (upperFilename.includes('720P')) {
+        versionKeywords.push('720p');
+    }
+    
+    // HDR
+    if (upperFilename.includes('HDR')) {
+        versionKeywords.push('HDR');
+    }
+    
+    // Source quality
+    if (upperFilename.includes('BLURAY') || upperFilename.includes('BLU-RAY')) {
+        versionKeywords.push('BluRay', 'Blu-ray', 'BDRip');
+    } else if (upperFilename.includes('WEBRIP')) {
+        versionKeywords.push('WEBRip', 'WEB-DL');
+    } else if (upperFilename.includes('WEB-DL')) {
+        versionKeywords.push('WEB-DL', 'WEBRip');
+    } else if (upperFilename.includes('DVDRIP')) {
+        versionKeywords.push('DVDRip', 'DVD');
+    } else if (upperFilename.includes('HDTV')) {
+        versionKeywords.push('HDTV');
+    } else if (upperFilename.includes('CAM')) {
+        versionKeywords.push('CAM');
+    } else if (upperFilename.includes('SCREENER')) {
+        versionKeywords.push('SCREENER');
+    }
+    
+    // Codec info
+    if (upperFilename.includes('X265') || upperFilename.includes('HEVC')) {
+        versionKeywords.push('x265', 'HEVC');
+    } else if (upperFilename.includes('X264')) {
+        versionKeywords.push('x264');
+    }
+    
+    // Audio info
+    if (upperFilename.includes('DD5.1') || upperFilename.includes('DD+')) {
+        versionKeywords.push('DD5.1');
+    } else if (upperFilename.includes('DTS')) {
+        versionKeywords.push('DTS');
+    }
+    
+    // Extended/Director's cuts
+    if (upperFilename.includes('EXTENDED')) {
+        versionKeywords.push('Extended');
+    } else if (upperFilename.includes('DIRECTOR')) {
+        versionKeywords.push('Directors', 'Director');
+    } else if (upperFilename.includes('UNCUT')) {
+        versionKeywords.push('Uncut');
+    }
+    
+    console.log(`[VERSION] Extracted keywords: ${versionKeywords.join(', ')}`);
+    return versionKeywords;
+}
+
+// Helper function to calculate compatibility score between file and subtitle version
+function calculateCompatibilityScore(fileVersions, subtitleVersion) {
+    if (!subtitleVersion || !fileVersions || fileVersions.length === 0) {
+        return 0;
+    }
+    
+    const upperSubtitleVersion = subtitleVersion.toUpperCase();
+    let score = 0;
+    let maxPossibleScore = 0;
+    
+    // Check each file version keyword against subtitle version
+    for (const keyword of fileVersions) {
+        maxPossibleScore += 10; // Maximum points per keyword
+        
+        if (upperSubtitleVersion.includes(keyword.toUpperCase())) {
+            if (keyword.toLowerCase().includes('bluray') || keyword.toLowerCase().includes('1080p') || keyword.toLowerCase().includes('720p')) {
+                score += 10; // High priority for source and quality
+            } else if (keyword.toLowerCase().includes('x264') || keyword.toLowerCase().includes('x265')) {
+                score += 7; // Medium priority for codec
+            } else {
+                score += 5; // Lower priority for other keywords
+            }
+        }
+    }
+    
+    // Normalize to 0-100 scale
+    const normalizedScore = maxPossibleScore > 0 ? Math.round((score / maxPossibleScore) * 100) : 0;
+    
+    console.log(`[COMPATIBILITY] File versions: [${fileVersions.join(', ')}] vs Subtitle: "${subtitleVersion}" = ${normalizedScore}% (${score}/${maxPossibleScore})`);
+    
+    return normalizedScore;
+}
 async function getMovieTitle(imdbId) {
     try {
         // Use OMDB API to get movie title (free API)
@@ -307,10 +405,48 @@ class TitulkyClient {
                     return;
                 }
 
-                const title = linkElement.text().trim();
+                const titleText = linkElement.text().trim();
+                
+                // Extract title and version from the title text
+                // Example: "Total Recall 1990 BluRay 720p x264 DTS-WiKi"
+                let title = titleText;
+                let version = '';
+                
+                // Look for common version indicators to separate title from version
+                const versionIndicators = [
+                    'BluRay', 'BDRip', 'WEBRip', 'WEB-DL', 'DVDRip', 'HDTV', 'CAM', 'SCREENER',
+                    '2160p', '1080p', '720p', '480p', '4K', 'UHD', 'HDR',
+                    'x264', 'x265', 'HEVC', 'DD5.1', 'DTS', 'AC3',
+                    'Extended', 'Directors', 'Uncut', 'PROPER', 'REPACK'
+                ];
+                
+                // Find where version info starts
+                let versionStartIndex = -1;
+                let foundIndicator = '';
+                
+                for (const indicator of versionIndicators) {
+                    const index = titleText.toLowerCase().indexOf(indicator.toLowerCase());
+                    if (index > 0 && (versionStartIndex === -1 || index < versionStartIndex)) {
+                        versionStartIndex = index;
+                        foundIndicator = indicator;
+                    }
+                }
+                
+                if (versionStartIndex > 0) {
+                    title = titleText.substring(0, versionStartIndex).trim();
+                    version = titleText.substring(versionStartIndex).trim();
+                    console.log(`[PARSE] Row ${index}: Separated title="${title}" version="${version}" (found: ${foundIndicator})`);
+                } else {
+                    // If no version indicators found, check if there's a year and try to separate based on that
+                    const yearMatch = titleText.match(/^(.+?)(\s+\d{4}\s+.+)$/);
+                    if (yearMatch) {
+                        title = yearMatch[1].trim();
+                        version = yearMatch[2].trim();
+                        console.log(`[PARSE] Row ${index}: Separated by year title="${title}" version="${version}"`);
+                    }
+                }
                 
                 // Try to find other data in the cells
-                let version = '';
                 let year = '';
                 let downloads = 0;
                 let lang = '';
@@ -334,7 +470,7 @@ class TitulkyClient {
                     }
                 });
 
-                console.log(`[PARSE] Row ${index}: title="${title}", lang="${lang}", downloads=${downloads}, year="${year}"`);
+                console.log(`[PARSE] Row ${index}: title="${title}", version="${version}", lang="${lang}", downloads=${downloads}, year="${year}"`);
 
                 // Convert language codes
                 let language = lang;
@@ -1002,16 +1138,57 @@ app.get('/:config/subtitles/:type/:id*', async (req, res) => {
 
         console.log(`[SUBTITLES] Total subtitles found: ${allSubtitles.length}`);
         
-        const stremioSubtitles = allSubtitles.map(sub => {
+        // Calculate compatibility scores and sort by them
+        const subtitlesWithScores = allSubtitles.map(sub => {
+            const compatibilityScore = calculateCompatibilityScore(fileVersionKeywords, sub.version);
+            return {
+                ...sub,
+                compatibilityScore: compatibilityScore
+            };
+        });
+        
+        // Sort by compatibility score (highest first), then by downloads (highest first)
+        subtitlesWithScores.sort((a, b) => {
+            if (a.compatibilityScore !== b.compatibilityScore) {
+                return b.compatibilityScore - a.compatibilityScore;
+            }
+            return b.downloads - a.downloads;
+        });
+        
+        console.log(`[SUBTITLES] Sorted subtitles by compatibility:`);
+        subtitlesWithScores.slice(0, 5).forEach((sub, index) => {
+            console.log(`[SUBTITLES] ${index + 1}. "${sub.title}" (${sub.version}) - Compatibility: ${sub.compatibilityScore}%, Downloads: ${sub.downloads}`);
+        });
+        
+        const stremioSubtitles = subtitlesWithScores.map(sub => {
+            let subtitleName = sub.title;
+            
+            // Add version info to subtitle name if available
+            if (sub.version) {
+                subtitleName += ` (${sub.version})`;
+            }
+            
+            // Add compatibility indicator for high-scoring matches
+            if (sub.compatibilityScore >= 70) {
+                subtitleName = `✓ ${subtitleName}`;
+            } else if (sub.compatibilityScore >= 40) {
+                subtitleName = `~ ${subtitleName}`;
+            }
+            
+            // Add author if available
+            if (sub.author) {
+                subtitleName += ` - ${sub.author}`;
+            }
+            
             const subtitle = {
                 id: `${sub.id}:${sub.linkFile}`,
                 url: `${req.protocol}://${req.get('host')}/${config}/subtitle/${sub.id}/${encodeURIComponent(sub.linkFile)}.srt`,
                 lang: sub.language.toLowerCase() === 'czech' ? 'cs' : 
                       sub.language.toLowerCase() === 'slovak' ? 'sk' : 'cs',
-                name: `${sub.title}${sub.version ? ` (${sub.version})` : ''}${sub.author ? ` - ${sub.author}` : ''}`,
-                rating: sub.rating
+                name: subtitleName,
+                rating: Math.min(5, Math.max(sub.rating, Math.floor(sub.compatibilityScore / 20))) // Boost rating based on compatibility
             };
-            console.log(`[SUBTITLES] Mapped subtitle: ${subtitle.name} (${subtitle.lang})`);
+            console.log(`[SUBTITLES] Mapped subtitle: ${subtitle.name} (${subtitle.lang}) - Rating: ${subtitle.rating}`);
             return subtitle;
         });
 
