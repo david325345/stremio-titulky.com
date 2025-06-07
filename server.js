@@ -29,9 +29,11 @@ class TitulkyClient {
     constructor() {
         this.baseUrl = 'https://www.titulky.com';
         this.cookies = {};
+        this.lastUsed = Date.now();
     }
 
     async login(username, password) {
+        console.log(`[LOGIN] Attempting login for user: ${username}`);
         try {
             const loginData = new URLSearchParams({
                 'Login': username,
@@ -40,73 +42,127 @@ class TitulkyClient {
                 'Detail2': ''
             });
 
+            console.log(`[LOGIN] Sending POST request to ${this.baseUrl}/index.php`);
             const response = await axios.post(`${this.baseUrl}/index.php`, loginData, {
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'Origin': this.baseUrl,
-                    'Referer': this.baseUrl
-                }
+                    'Referer': this.baseUrl,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                timeout: 10000
             });
 
+            console.log(`[LOGIN] Response status: ${response.status}`);
+            
             if (response.data.includes('BadLogin')) {
+                console.log('[LOGIN] Bad credentials detected');
                 return false;
             }
 
             // Extract cookies from response
             const setCookie = response.headers['set-cookie'];
             if (setCookie) {
+                console.log(`[LOGIN] Extracting cookies from ${setCookie.length} set-cookie headers`);
                 setCookie.forEach(cookie => {
                     const [name, value] = cookie.split('=');
                     if (name && value) {
                         this.cookies[name] = value.split(';')[0];
+                        console.log(`[LOGIN] Cookie set: ${name}=${this.cookies[name].substring(0, 10)}...`);
                     }
                 });
             }
 
+            this.lastUsed = Date.now();
+            console.log('[LOGIN] Login successful');
             return true;
         } catch (error) {
-            console.error('Login error:', error.message);
+            console.error('[LOGIN] Login error:', error.message);
+            if (error.response) {
+                console.error('[LOGIN] Response status:', error.response.status);
+                console.error('[LOGIN] Response data:', error.response.data?.substring(0, 200));
+            }
             return false;
         }
     }
 
     async searchSubtitles(query) {
+        console.log(`[SEARCH] Starting search for: "${query}"`);
         try {
             const searchUrl = `${this.baseUrl}/index.php?${new URLSearchParams({
                 'Fulltext': query,
                 'FindUser': ''
             })}`;
 
+            console.log(`[SEARCH] Search URL: ${searchUrl}`);
+            console.log(`[SEARCH] Using cookies: ${Object.keys(this.cookies).join(', ')}`);
+
             const response = await axios.get(searchUrl, {
                 headers: {
-                    'Cookie': this.getCookieString()
-                }
+                    'Cookie': this.getCookieString(),
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Referer': this.baseUrl
+                },
+                timeout: 15000
             });
 
-            return this.parseSearchResults(response.data);
+            console.log(`[SEARCH] Response status: ${response.status}`);
+            console.log(`[SEARCH] Response length: ${response.data.length} characters`);
+
+            const subtitles = this.parseSearchResults(response.data);
+            console.log(`[SEARCH] Found ${subtitles.length} subtitles`);
+            
+            this.lastUsed = Date.now();
+            return subtitles;
         } catch (error) {
-            console.error('Search error:', error.message);
+            console.error('[SEARCH] Search error:', error.message);
+            if (error.response) {
+                console.error('[SEARCH] Response status:', error.response.status);
+                console.error('[SEARCH] Response headers:', error.response.headers);
+            }
             return [];
         }
     }
 
     parseSearchResults(html) {
+        console.log('[PARSE] Starting to parse search results');
         const $ = cheerio.load(html);
         const subtitles = [];
 
-        $('tr[class^="r"]').each((index, element) => {
+        // Debug: Check if we're logged in
+        if (html.includes('Přihlásit')) {
+            console.log('[PARSE] WARNING: Appears to be logged out (found login text)');
+        }
+
+        const rows = $('tr[class^="r"]');
+        console.log(`[PARSE] Found ${rows.length} result rows`);
+
+        rows.each((index, element) => {
             try {
                 const $row = $(element);
                 const cells = $row.find('td');
                 
-                if (cells.length < 9) return;
+                console.log(`[PARSE] Row ${index}: ${cells.length} cells`);
+                
+                if (cells.length < 9) {
+                    console.log(`[PARSE] Row ${index}: Insufficient cells (${cells.length}), skipping`);
+                    return;
+                }
 
                 const linkElement = cells.eq(1).find('a');
                 const href = linkElement.attr('href');
-                if (!href) return;
+                console.log(`[PARSE] Row ${index}: href = ${href}`);
+                
+                if (!href) {
+                    console.log(`[PARSE] Row ${index}: No href found, skipping`);
+                    return;
+                }
 
                 const linkMatch = href.match(/(.+)-(\d+)\.htm/);
-                if (!linkMatch) return;
+                if (!linkMatch) {
+                    console.log(`[PARSE] Row ${index}: href doesn't match pattern, skipping`);
+                    return;
+                }
 
                 const title = linkElement.text().trim();
                 const version = cells.eq(2).find('a').attr('title') || '';
@@ -116,6 +172,8 @@ class TitulkyClient {
                 const lang = langImg.attr('alt') || '';
                 const size = parseFloat(cells.eq(8).text().trim()) || 0;
                 const author = cells.eq(9).find('a').text().trim() || '';
+
+                console.log(`[PARSE] Row ${index}: title="${title}", lang="${lang}", downloads=${downloads}`);
 
                 // Convert language codes
                 let language = lang;
@@ -135,10 +193,11 @@ class TitulkyClient {
                     rating: Math.min(5, Math.floor(downloads / 100)) // Simple rating based on downloads
                 });
             } catch (error) {
-                console.error('Parse row error:', error.message);
+                console.error(`[PARSE] Parse row ${index} error:`, error.message);
             }
         });
 
+        console.log(`[PARSE] Successfully parsed ${subtitles.length} subtitles`);
         return subtitles;
     }
 
@@ -521,79 +580,149 @@ app.get('/:config/manifest.json', (req, res) => {
 app.get('/:config/subtitles/:type/:id.json', async (req, res) => {
     const { config, type, id } = req.params;
     
+    console.log(`[SUBTITLES] Request: type=${type}, id=${id}, config=${config.substring(0, 20)}...`);
+    
     try {
         const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
         const { username, password } = decodedConfig;
 
+        console.log(`[SUBTITLES] Decoded config for user: ${username}`);
+
         if (!username || !password) {
+            console.log('[SUBTITLES] Missing credentials in config');
             return res.status(400).json({ error: 'Missing credentials' });
         }
 
         // Get or create client session
         let client = userSessions.get(username);
         if (!client) {
+            console.log(`[SUBTITLES] No session found for ${username}, creating new session`);
             client = new TitulkyClient();
             const loginSuccess = await client.login(username, password);
             if (!loginSuccess) {
+                console.log(`[SUBTITLES] Login failed for ${username}`);
                 return res.status(401).json({ error: 'Login failed' });
             }
             userSessions.set(username, client);
+            console.log(`[SUBTITLES] Session created for ${username}`);
+        } else {
+            console.log(`[SUBTITLES] Using existing session for ${username}`);
+            client.lastUsed = Date.now();
         }
 
-        // Extract IMDB ID
+        // Extract IMDB ID and create search query
         const imdbId = id.replace('tt', '');
+        console.log(`[SUBTITLES] IMDB ID: ${imdbId}`);
         
-        // Search for subtitles
-        let searchQuery = '';
+        // Try different search strategies
+        let searchQueries = [];
+        
         if (type === 'movie') {
-            // For movies, we'd need to get movie title from IMDB API or similar
-            searchQuery = imdbId; // Fallback to IMDB ID
+            // For movies, search by IMDB ID first, then try generic terms
+            searchQueries = [
+                imdbId,
+                `imdb ${imdbId}`,
+                `tt${imdbId}`
+            ];
         } else if (type === 'series') {
-            // For series, we'd need episode information
-            searchQuery = imdbId; // Fallback to IMDB ID
+            // For series, we need episode info from the ID
+            // Stremio sometimes passes series:id:season:episode format
+            const idParts = id.split(':');
+            if (idParts.length >= 4) {
+                const [, , season, episode] = idParts;
+                searchQueries = [
+                    `${imdbId} S${season.padStart(2, '0')}E${episode.padStart(2, '0')}`,
+                    `imdb ${imdbId} ${season}x${episode}`,
+                    imdbId
+                ];
+            } else {
+                searchQueries = [imdbId, `imdb ${imdbId}`];
+            }
         }
 
-        const subtitles = await client.searchSubtitles(searchQuery);
-        
-        const stremioSubtitles = subtitles.map(sub => ({
-            id: `${sub.id}:${sub.linkFile}`,
-            url: `${req.protocol}://${req.get('host')}/${config}/subtitle/${sub.id}/${encodeURIComponent(sub.linkFile)}.srt`,
-            lang: sub.language.toLowerCase() === 'czech' ? 'cs' : 
-                  sub.language.toLowerCase() === 'slovak' ? 'sk' : 'cs',
-            name: `${sub.title}${sub.version ? ` (${sub.version})` : ''}${sub.author ? ` - ${sub.author}` : ''}`,
-            rating: sub.rating
-        }));
+        console.log(`[SUBTITLES] Search queries: ${searchQueries.join(', ')}`);
 
+        let allSubtitles = [];
+        
+        // Try each search query until we find results
+        for (const query of searchQueries) {
+            console.log(`[SUBTITLES] Trying search query: "${query}"`);
+            const subtitles = await client.searchSubtitles(query);
+            
+            if (subtitles.length > 0) {
+                console.log(`[SUBTITLES] Found ${subtitles.length} results for query: "${query}"`);
+                allSubtitles = subtitles;
+                break;
+            } else {
+                console.log(`[SUBTITLES] No results for query: "${query}"`);
+            }
+        }
+
+        console.log(`[SUBTITLES] Total subtitles found: ${allSubtitles.length}`);
+        
+        const stremioSubtitles = allSubtitles.map(sub => {
+            const subtitle = {
+                id: `${sub.id}:${sub.linkFile}`,
+                url: `${req.protocol}://${req.get('host')}/${config}/subtitle/${sub.id}/${encodeURIComponent(sub.linkFile)}.srt`,
+                lang: sub.language.toLowerCase() === 'czech' ? 'cs' : 
+                      sub.language.toLowerCase() === 'slovak' ? 'sk' : 'cs',
+                name: `${sub.title}${sub.version ? ` (${sub.version})` : ''}${sub.author ? ` - ${sub.author}` : ''}`,
+                rating: sub.rating
+            };
+            console.log(`[SUBTITLES] Mapped subtitle: ${subtitle.name} (${subtitle.lang})`);
+            return subtitle;
+        });
+
+        console.log(`[SUBTITLES] Returning ${stremioSubtitles.length} subtitles to Stremio`);
         res.json({ subtitles: stremioSubtitles });
+        
     } catch (error) {
-        console.error('Subtitles error:', error.message);
-        res.status(500).json({ error: 'Failed to fetch subtitles' });
+        console.error('[SUBTITLES] Error:', error.message);
+        console.error('[SUBTITLES] Stack:', error.stack);
+        res.status(500).json({ 
+            error: 'Failed to fetch subtitles',
+            details: error.message 
+        });
     }
 });
 
 app.get('/:config/subtitle/:id/:linkFile', async (req, res) => {
     const { config, id, linkFile } = req.params;
     
+    console.log(`[DOWNLOAD] Request: id=${id}, linkFile=${linkFile}`);
+    
     try {
         const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
         const { username } = decodedConfig;
 
+        console.log(`[DOWNLOAD] Download request for user: ${username}`);
+
         const client = userSessions.get(username);
         if (!client) {
+            console.log(`[DOWNLOAD] No session found for ${username}`);
             return res.status(401).json({ error: 'Session expired' });
         }
 
         const decodedLinkFile = decodeURIComponent(linkFile.replace('.srt', ''));
+        console.log(`[DOWNLOAD] Decoded link file: ${decodedLinkFile}`);
+        
         const subtitleData = await client.downloadSubtitle(id, decodedLinkFile);
+        
+        console.log(`[DOWNLOAD] Downloaded ${subtitleData.length} bytes`);
         
         res.set({
             'Content-Type': 'application/zip',
-            'Content-Disposition': `attachment; filename="subtitle_${id}.zip"`
+            'Content-Disposition': `attachment; filename="subtitle_${id}.zip"`,
+            'Content-Length': subtitleData.length
         });
         res.send(subtitleData);
     } catch (error) {
-        console.error('Download subtitle error:', error.message);
-        res.status(500).json({ error: 'Failed to download subtitle' });
+        console.error('[DOWNLOAD] Error:', error.message);
+        console.error('[DOWNLOAD] Stack:', error.stack);
+        res.status(500).json({ 
+            error: 'Failed to download subtitle',
+            details: error.message 
+        });
     }
 });
 
@@ -627,9 +756,44 @@ app.post('/configure', async (req, res) => {
     });
 });
 
-// Health check
+// Debug endpoint for testing
+app.get('/debug/:config', async (req, res) => {
+    const { config } = req.params;
+    
+    try {
+        const decodedConfig = JSON.parse(Buffer.from(config, 'base64').toString());
+        const { username } = decodedConfig;
+        
+        const client = userSessions.get(username);
+        const sessionExists = !!client;
+        const sessionAge = client ? Date.now() - client.lastUsed : null;
+        
+        res.json({
+            configValid: true,
+            username: username,
+            sessionExists: sessionExists,
+            sessionAge: sessionAge,
+            cookiesCount: client ? Object.keys(client.cookies).length : 0,
+            totalSessions: userSessions.size
+        });
+    } catch (error) {
+        res.json({
+            configValid: false,
+            error: error.message
+        });
+    }
+});
 app.get('/health', (req, res) => {
-    res.json({ status: 'OK', timestamp: new Date().toISOString() });
+    const sessionCount = userSessions.size;
+    const uptime = process.uptime();
+    
+    res.json({ 
+        status: 'OK', 
+        timestamp: new Date().toISOString(),
+        uptime: Math.floor(uptime),
+        activeSessions: sessionCount,
+        version: '1.0.0'
+    });
 });
 
 // Clean up expired sessions every hour
@@ -637,14 +801,21 @@ setInterval(() => {
     const oneHour = 60 * 60 * 1000;
     const now = Date.now();
     
+    console.log(`[CLEANUP] Checking ${userSessions.size} sessions for cleanup`);
+    
     for (const [username, session] of userSessions.entries()) {
         if (now - session.lastUsed > oneHour) {
+            console.log(`[CLEANUP] Removing expired session for ${username}`);
             userSessions.delete(username);
         }
     }
+    
+    console.log(`[CLEANUP] ${userSessions.size} sessions remaining after cleanup`);
 }, 60 * 60 * 1000);
 
 app.listen(PORT, () => {
     console.log(`Titulky.com Stremio Addon running on port ${PORT}`);
     console.log(`Manifest URL: http://localhost:${PORT}/manifest.json`);
+    console.log(`Health check: http://localhost:${PORT}/health`);
+    console.log('Debug logging enabled');
 });
