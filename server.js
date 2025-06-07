@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const cors = require('cors');
+const zlib = require('zlib');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -70,14 +71,35 @@ class TitulkyClient {
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'Origin': this.baseUrl,
                     'Referer': this.baseUrl,
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'cs,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate'
                 },
-                timeout: 10000
+                timeout: 10000,
+                responseType: 'arraybuffer'
             });
 
             console.log(`[LOGIN] Response status: ${response.status}`);
             
-            if (response.data.includes('BadLogin')) {
+            // Handle compressed response
+            let content;
+            const contentEncoding = response.headers['content-encoding'];
+            
+            if (contentEncoding === 'gzip') {
+                console.log('[LOGIN] Decompressing gzip content');
+                const zlib = require('zlib');
+                content = zlib.gunzipSync(response.data).toString('utf-8');
+            } else if (contentEncoding === 'deflate') {
+                console.log('[LOGIN] Decompressing deflate content');
+                const zlib = require('zlib');
+                content = zlib.inflateSync(response.data).toString('utf-8');
+            } else {
+                console.log('[LOGIN] No compression detected');
+                content = response.data.toString('utf-8');
+            }
+            
+            if (content.includes('BadLogin')) {
                 console.log('[LOGIN] Bad credentials detected');
                 return false;
             }
@@ -102,7 +124,7 @@ class TitulkyClient {
             console.error('[LOGIN] Login error:', error.message);
             if (error.response) {
                 console.error('[LOGIN] Response status:', error.response.status);
-                console.error('[LOGIN] Response data:', error.response.data?.substring(0, 200));
+                console.error('[LOGIN] Response data type:', typeof error.response.data);
             }
             return false;
         }
@@ -123,15 +145,39 @@ class TitulkyClient {
                 headers: {
                     'Cookie': this.getCookieString(),
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Referer': this.baseUrl
+                    'Referer': this.baseUrl,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'cs,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate'
                 },
-                timeout: 15000
+                timeout: 15000,
+                responseType: 'arraybuffer'  // Get raw data to handle compression
             });
 
             console.log(`[SEARCH] Response status: ${response.status}`);
-            console.log(`[SEARCH] Response length: ${response.data.length} characters`);
+            console.log(`[SEARCH] Response headers:`, response.headers);
+            
+            // Handle compressed response
+            let content;
+            const contentEncoding = response.headers['content-encoding'];
+            
+            if (contentEncoding === 'gzip') {
+                console.log('[SEARCH] Decompressing gzip content');
+                const zlib = require('zlib');
+                content = zlib.gunzipSync(response.data).toString('utf-8');
+            } else if (contentEncoding === 'deflate') {
+                console.log('[SEARCH] Decompressing deflate content');
+                const zlib = require('zlib');
+                content = zlib.inflateSync(response.data).toString('utf-8');
+            } else {
+                console.log('[SEARCH] No compression detected');
+                content = response.data.toString('utf-8');
+            }
 
-            const subtitles = this.parseSearchResults(response.data);
+            console.log(`[SEARCH] Content length: ${content.length} characters`);
+            console.log(`[SEARCH] Content start: ${content.substring(0, 200)}`);
+
+            const subtitles = this.parseSearchResults(content);
             console.log(`[SEARCH] Found ${subtitles.length} subtitles`);
             
             this.lastUsed = Date.now();
@@ -141,6 +187,7 @@ class TitulkyClient {
             if (error.response) {
                 console.error('[SEARCH] Response status:', error.response.status);
                 console.error('[SEARCH] Response headers:', error.response.headers);
+                console.error('[SEARCH] Response data type:', typeof error.response.data);
             }
             return [];
         }
@@ -224,6 +271,7 @@ class TitulkyClient {
     }
 
     async downloadSubtitle(subtitleId, linkFile) {
+        console.log(`[DOWNLOAD] Starting download: id=${subtitleId}, linkFile=${linkFile}`);
         try {
             const downloadUrl = `${this.baseUrl}/idown.php?${new URLSearchParams({
                 'R': Date.now().toString(),
@@ -232,45 +280,78 @@ class TitulkyClient {
                 'zip': 'z'
             })}`;
 
+            console.log(`[DOWNLOAD] Download page URL: ${downloadUrl}`);
+
             const response = await axios.get(downloadUrl, {
                 headers: {
                     'Cookie': this.getCookieString(),
-                    'Referer': `${this.baseUrl}/${linkFile}.htm`
-                }
+                    'Referer': `${this.baseUrl}/${linkFile}.htm`,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'cs,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate'
+                },
+                responseType: 'arraybuffer'
             });
 
+            // Handle compressed response
+            let content;
+            const contentEncoding = response.headers['content-encoding'];
+            
+            if (contentEncoding === 'gzip') {
+                console.log('[DOWNLOAD] Decompressing gzip content');
+                content = zlib.gunzipSync(response.data).toString('utf-8');
+            } else if (contentEncoding === 'deflate') {
+                console.log('[DOWNLOAD] Decompressing deflate content');
+                content = zlib.inflateSync(response.data).toString('utf-8');
+            } else {
+                console.log('[DOWNLOAD] No compression detected');
+                content = response.data.toString('utf-8');
+            }
+
+            console.log(`[DOWNLOAD] Content length: ${content.length}`);
+
             // Check if captcha is required
-            if (response.data.includes('captcha')) {
+            if (content.includes('captcha')) {
+                console.log('[DOWNLOAD] Captcha detected');
                 throw new Error('Captcha required - not supported in this version');
             }
 
             // Extract download link and wait time
-            const downloadLinkMatch = response.data.match(/id="downlink" href="([^"]+)"/);
-            const waitTimeMatch = response.data.match(/CountDown\((\d+)\)/);
+            const downloadLinkMatch = content.match(/id="downlink" href="([^"]+)"/);
+            const waitTimeMatch = content.match(/CountDown\((\d+)\)/);
 
             if (!downloadLinkMatch) {
+                console.log('[DOWNLOAD] Download link not found in content');
+                console.log('[DOWNLOAD] Content preview:', content.substring(0, 500));
                 throw new Error('Download link not found');
             }
 
             const finalUrl = `${this.baseUrl}${downloadLinkMatch[1]}`;
             const waitTime = waitTimeMatch ? parseInt(waitTimeMatch[1]) : 0;
 
+            console.log(`[DOWNLOAD] Final URL: ${finalUrl}`);
+            console.log(`[DOWNLOAD] Wait time: ${waitTime} seconds`);
+
             // Wait before downloading
             if (waitTime > 0) {
+                console.log(`[DOWNLOAD] Waiting ${waitTime} seconds...`);
                 await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
             }
 
             const fileResponse = await axios.get(finalUrl, {
                 headers: {
                     'Cookie': this.getCookieString(),
-                    'Referer': `${this.baseUrl}/idown.php`
+                    'Referer': `${this.baseUrl}/idown.php`,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
                 responseType: 'arraybuffer'
             });
 
+            console.log(`[DOWNLOAD] Downloaded ${fileResponse.data.length} bytes`);
             return fileResponse.data;
         } catch (error) {
-            console.error('Download error:', error.message);
+            console.error('[DOWNLOAD] Download error:', error.message);
             throw error;
         }
     }
