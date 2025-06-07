@@ -48,6 +48,48 @@ app.use(express.urlencoded({ extended: true }));
 // Store user sessions (in production, use Redis or database)
 const userSessions = new Map();
 
+// Keep-alive ping endpoint
+app.get('/ping', (req, res) => {
+    res.json({ 
+        status: 'alive', 
+        timestamp: new Date().toISOString(),
+        uptime: Math.floor(process.uptime()),
+        activeSessions: userSessions.size
+    });
+});
+
+// Keep-alive function to prevent Render.com sleep
+function startKeepAlive() {
+    const baseUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+    
+    console.log(`[KEEP-ALIVE] Starting self-ping every 13 minutes to: ${baseUrl}/ping`);
+    
+    setInterval(async () => {
+        try {
+            const startTime = Date.now();
+            const response = await axios.get(`${baseUrl}/ping`, {
+                timeout: 30000,
+                headers: {
+                    'User-Agent': 'Titulky-Addon-KeepAlive/1.0'
+                }
+            });
+            const responseTime = Date.now() - startTime;
+            
+            console.log(`[KEEP-ALIVE] ✓ Ping successful in ${responseTime}ms - Status: ${response.data.status} - Uptime: ${response.data.uptime}s`);
+        } catch (error) {
+            console.log(`[KEEP-ALIVE] ✗ Ping failed: ${error.message}`);
+            
+            // If ping fails, try alternative endpoints
+            try {
+                await axios.get(`${baseUrl}/health`, { timeout: 15000 });
+                console.log(`[KEEP-ALIVE] ✓ Fallback health ping successful`);
+            } catch (fallbackError) {
+                console.log(`[KEEP-ALIVE] ✗ Fallback ping also failed: ${fallbackError.message}`);
+            }
+        }
+    }, 13 * 60 * 1000); // Ping every 13 minutes (780 seconds)
+}
+
 // Helper function to get movie/series title from IMDB ID
 async function getMovieTitle(imdbId) {
     try {
@@ -759,6 +801,15 @@ app.get('/', (req, res) => {
             margin-top: 20px;
             color: #856404;
         }
+
+        .keep-alive-status {
+            background: rgba(76, 175, 80, 0.1);
+            border: 2px solid #4caf50;
+            border-radius: 12px;
+            padding: 15px;
+            margin-top: 20px;
+            color: #2e7d32;
+        }
     </style>
 </head>
 <body>
@@ -794,6 +845,11 @@ app.get('/', (req, res) => {
             </a>
         </div>
         
+        <div class="keep-alive-status">
+            <strong>🟢 Keep-Alive aktivní:</strong><br>
+            Addon se automaticky udržuje při životě ping každých 13 minut pro Render.com hosting.
+        </div>
+        
         <div class="warning">
             <strong>⚠️ Pozor na CAPTCHA:</strong><br>
             Pokud Titulky.com zobrazí CAPTCHA, addon automaticky poskytne náhradní SRT soubor s instrukcemi pro ruční stažení.
@@ -807,6 +863,7 @@ app.get('/', (req, res) => {
                 <li>Po úspěšném ověření klikněte na "Nainstalovat do Stremio"</li>
                 <li>Addon bude dostupný v sekci Addons ve Stremio</li>
                 <li>Titulky se automaticky zobrazí při přehrávání filmů a seriálů</li>
+                <li><strong>Keep-Alive:</strong> Addon se automaticky udržuje aktivní na Render.com</li>
                 <li><strong>CAPTCHA fallback:</strong> Když je detekována CAPTCHA, zobrazí se náhradní titulky s instrukcemi</li>
             </ul>
         </div>
@@ -1328,7 +1385,7 @@ app.get('/test/:config/:query', async (req, res) => {
     }
 });
 
-// Health check with detailed info
+// Health check with detailed info including keep-alive status
 app.get('/health', (req, res) => {
     const sessionCount = userSessions.size;
     const uptime = process.uptime();
@@ -1342,7 +1399,12 @@ app.get('/health', (req, res) => {
         uptime: Math.floor(uptime),
         activeSessions: sessionCount,
         captchaSessions: captchaSessions,
-        version: '1.0.1'
+        keepAlive: {
+            enabled: true,
+            interval: '13 minutes',
+            purpose: 'Prevent Render.com sleep'
+        },
+        version: '1.0.2'
     });
 });
 
@@ -1396,6 +1458,21 @@ app.listen(PORT, () => {
     console.log(`Titulky.com Stremio Addon running on port ${PORT}`);
     console.log(`Manifest URL: http://localhost:${PORT}/manifest.json`);
     console.log(`Health check: http://localhost:${PORT}/health`);
+    console.log(`Ping endpoint: http://localhost:${PORT}/ping`);
     console.log('Debug logging enabled');
     console.log('CAPTCHA fallback functionality active');
+    
+    // Start keep-alive mechanism for production (Render.com)
+    if (process.env.NODE_ENV === 'production' || process.env.RENDER_EXTERNAL_URL) {
+        console.log('🟢 Starting keep-alive mechanism for Render.com...');
+        console.log('⏰ Self-ping will occur every 13 minutes to prevent sleep');
+        
+        // Start keep-alive after 30 seconds to ensure server is fully ready
+        setTimeout(() => {
+            startKeepAlive();
+            console.log('✅ Keep-alive mechanism started successfully');
+        }, 30000);
+    } else {
+        console.log('🟡 Keep-alive mechanism disabled (local development)');
+    }
 });
