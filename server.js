@@ -131,15 +131,19 @@ class TitulkyClient {
         }
 
         try {
-            console.log(`[LOGIN] 🔐 ${this.username}`);
+            console.log(`[LOGIN] 🔐 Logging in: ${this.username}`);
+            
+            const formData = `Login=${encodeURIComponent(this.username)}&Password=${encodeURIComponent(this.password)}&prihlasit=Přihlásit`;
             
             const response = await axios.post(
                 `${this.baseUrl}/`,
-                `Prihlasit=1&login=${encodeURIComponent(this.username)}&password=${encodeURIComponent(this.password)}`,
+                formData,
                 {
                     headers: {
                         'Content-Type': 'application/x-www-form-urlencoded',
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'cs-CZ,cs;q=0.9',
                         'Referer': this.baseUrl,
                         'Origin': this.baseUrl
                     },
@@ -150,17 +154,29 @@ class TitulkyClient {
 
             this.saveCookies(response);
             
-            if (response.data.includes(this.username) || response.data.includes('Odhlásit') || response.data.includes('odhlasit')) {
-                console.log('[LOGIN] ✅ Success');
+            const html = response.data;
+            
+            // Check for successful login indicators
+            const isLoggedIn = html.includes(this.username) || 
+                             html.toLowerCase().includes('odhlásit') || 
+                             html.toLowerCase().includes('logout') ||
+                             this.cookies['user_id'] || 
+                             this.cookies['PHPSESSID'];
+            
+            console.log(`[LOGIN] Cookies: ${Object.keys(this.cookies).join(', ')}`);
+            
+            if (isLoggedIn) {
+                console.log('[LOGIN] ✅ Success!');
                 this.loggedIn = true;
                 return true;
             }
             
-            console.log('[LOGIN] ❌ Failed');
+            console.log('[LOGIN] ❌ Failed - check credentials');
+            console.log(`[LOGIN] Response length: ${html.length}`);
             return false;
             
         } catch (error) {
-            console.error(`[LOGIN] ❌ ${error.message}`);
+            console.error(`[LOGIN] ❌ Error: ${error.message}`);
             return false;
         }
     }
