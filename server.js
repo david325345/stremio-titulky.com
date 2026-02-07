@@ -1,9 +1,8 @@
 /*
 STREMIO ADDON - TITULKY.COM + REAL-DEBRID
-Verze 2.3.0 - Správná podpora Stremio konfigurace (base64)
-
-URL format: /{base64Config}/subtitles/{type}/{id}.json
-Base64 obsahuje: {"username":"...","password":"...","realDebridKey":"..."}
+Verze 3.0.0 - Nová implementace pro aktuální Titulky.com (2025)
+Multi-user RD integrace pomocí base64 config
+Hledá JEN název filmu (bez roku)
 */
 
 const express = require('express');
@@ -24,13 +23,10 @@ app.use(cors({
     credentials: false
 }));
 
-// ENHANCED LOGGING MIDDLEWARE
 app.use((req, res, next) => {
     const timestamp = new Date().toISOString();
     console.log(`\n${'='.repeat(80)}`);
     console.log(`[${timestamp}] ${req.method} ${req.url}`);
-    console.log(`[FULL URL] ${req.protocol}://${req.get('host')}${req.originalUrl}`);
-    console.log(`[PATH] ${req.path}`);
     console.log(`${'='.repeat(80)}\n`);
     next();
 });
@@ -38,268 +34,126 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Helper to decode base64 config
+// Decode base64 config
 function decodeConfig(base64String) {
     try {
         const decoded = Buffer.from(base64String, 'base64').toString('utf-8');
         const config = JSON.parse(decoded);
-        console.log(`[CONFIG] ✅ Decoded successfully`);
-        console.log(`[CONFIG] Username: ${config.username || 'N/A'}`);
-        console.log(`[CONFIG] Has RD Key: ${config.realDebridKey ? 'YES (' + config.realDebridKey.substring(0, 12) + '...)' : 'NO'}`);
+        console.log(`[CONFIG] ✅ User: ${config.username || 'N/A'}`);
+        console.log(`[CONFIG] ✅ RD Key: ${config.realDebridKey ? 'YES' : 'NO'}`);
         return config;
     } catch (error) {
-        console.log(`[CONFIG] ⚠️  Failed to decode: ${error.message}`);
+        console.log(`[CONFIG] ⚠️  Failed: ${error.message}`);
         return null;
     }
 }
 
-// Real-Debrid API class
+// Real-Debrid client
 class RealDebridClient {
     constructor(apiKey) {
         this.apiKey = apiKey;
         this.baseUrl = 'https://api.real-debrid.com/rest/1.0';
-        console.log(`[RD CLIENT] Created with key: ${apiKey ? apiKey.substring(0, 12) + '...' : 'NONE'}`);
     }
 
     async getCurrentStream() {
         try {
-            console.log('[RD] 📡 Fetching current streaming info...');
-            console.log(`[RD] 🔑 Using API key: ${this.apiKey.substring(0, 12)}...`);
-            
-            // Real-Debrid doesn't have a "currently streaming" endpoint
-            // We'll try to get active torrents instead
             const response = await axios.get(`${this.baseUrl}/torrents`, {
-                headers: {
-                    'Authorization': `Bearer ${this.apiKey}`
-                },
+                headers: { 'Authorization': `Bearer ${this.apiKey}` },
                 timeout: 5000,
-                params: {
-                    limit: 10,
-                    offset: 0
-                }
+                params: { limit: 10, offset: 0 }
             });
 
-            console.log(`[RD] ✅ API Response status: ${response.status}`);
-            console.log(`[RD] 📊 Total torrents: ${response.data?.length || 0}`);
-
             if (response.data && response.data.length > 0) {
-                // Find most recent torrent (sorted by date by default)
-                const recentTorrent = response.data[0];
-                
-                console.log(`[RD] 🎬 Most recent torrent: ${recentTorrent.filename}`);
-                console.log(`[RD] 📊 Status: ${recentTorrent.status}`);
-                console.log(`[RD] 📦 Size: ${(recentTorrent.bytes / 1024 / 1024 / 1024).toFixed(2)} GB`);
-                
-                // Only use if it's downloaded or downloading
-                if (recentTorrent.status === 'downloaded' || recentTorrent.status === 'downloading') {
+                const t = response.data[0];
+                if (t.status === 'downloaded' || t.status === 'downloading') {
+                    console.log(`[RD] ✅ ${t.filename}`);
                     return {
-                        filename: recentTorrent.filename,
-                        link: recentTorrent.links?.[0] || null,
-                        size: recentTorrent.bytes,
-                        quality: this.extractQualityFromFilename(recentTorrent.filename)
+                        filename: t.filename,
+                        size: t.bytes,
+                        quality: this.extractQuality(t.filename)
                     };
-                } else {
-                    console.log(`[RD] ⚠️  Torrent status is "${recentTorrent.status}", not using for matching`);
                 }
             }
-
-            console.log('[RD] ℹ️  No suitable torrents found for matching');
             return null;
         } catch (error) {
-            console.error('[RD] ❌ Error fetching torrent info:', error.message);
-            if (error.response) {
-                console.error(`[RD] ❌ Response status: ${error.response.status}`);
-                console.error(`[RD] ❌ Response data:`, error.response.data);
-            }
+            console.error(`[RD] ❌ ${error.message}`);
             return null;
         }
     }
 
-    extractQualityFromFilename(filename) {
-        const qualityPatterns = {
-            'bluray': ['bluray', 'blu-ray', 'bdrip', 'bd-rip', 'brrip', 'br-rip'],
+    extractQuality(filename) {
+        const patterns = {
+            'bluray': ['bluray', 'blu-ray', 'bdrip'],
             'remux': ['remux'],
-            'web-dl': ['web-dl', 'webdl', 'web.dl'],
-            'webrip': ['webrip', 'web-rip', 'web.rip'],
-            'hdtv': ['hdtv', 'hdtvrip'],
-            'dvdrip': ['dvdrip', 'dvd-rip'],
-            'cam': ['cam', 'hdcam', 'hd-cam', 'camrip'],
-            'ts': ['ts', 'hdts', 'hd-ts', 'telesync']
+            'web-dl': ['web-dl', 'webdl'],
+            'webrip': ['webrip'],
+            'hdtv': ['hdtv'],
+            'dvdrip': ['dvdrip']
         };
 
-        const filenameLower = filename.toLowerCase();
-        
-        for (const [quality, patterns] of Object.entries(qualityPatterns)) {
-            if (patterns.some(pattern => filenameLower.includes(pattern))) {
-                console.log(`[RD] 🎯 Detected quality from filename: ${quality}`);
-                return quality;
-            }
+        const lower = filename.toLowerCase();
+        for (const [quality, terms] of Object.entries(patterns)) {
+            if (terms.some(t => lower.includes(t))) return quality;
         }
 
-        if (filenameLower.includes('2160p') || filenameLower.includes('4k')) {
-            return 'bluray';
-        } else if (filenameLower.includes('1080p')) {
-            return 'web-dl';
-        } else if (filenameLower.includes('720p')) {
-            return 'webrip';
-        }
-
+        if (lower.includes('2160p') || lower.includes('4k')) return 'bluray';
+        if (lower.includes('1080p')) return 'web-dl';
+        if (lower.includes('720p')) return 'webrip';
         return 'unknown';
     }
 }
 
-// Enhanced subtitle matching system
+// Subtitle matcher
 class SubtitleMatcher {
-    constructor() {
-        this.sourcePriority = {
-            'bluray': 100,
-            'bdrip': 95,
-            'remux': 90,
-            'web-dl': 85,
-            'webdl': 85,
-            'webrip': 80,
-            'hdtv': 75,
-            'dvdrip': 70,
-            'dvdscr': 65,
-            'hdcam': 30,
-            'cam': 25,
-            'ts': 20
-        };
-
-        this.specialEditions = [
-            'extended', 'director', 'directors', 'special', 'edition', 'cut',
-            'uncut', 'unrated', 'theatrical', 'ultimate', 'remastered'
-        ];
-    }
-
-    estimateQualityFromSize(sizeInBytes) {
-        const sizeInGB = sizeInBytes / (1024 * 1024 * 1024);
-        console.log(`[MATCHER] 📏 Estimating quality from size: ${sizeInGB.toFixed(2)} GB`);
-
-        if (sizeInGB >= 50) return 'remux';
-        if (sizeInGB >= 25) return 'bluray';
-        if (sizeInGB >= 10) return 'web-dl';
-        if (sizeInGB >= 4) return 'webrip';
-        if (sizeInGB >= 2) return 'hdtv';
-        return 'dvdrip';
-    }
-
     extractVideoInfo(streamInfo, fallbackTitle = '') {
-        console.log(`[MATCHER] 🔍 Analyzing stream info...`);
-        
         let info = {
             source: 'unknown',
-            specialEdition: null,
             originalTitle: streamInfo?.filename || fallbackTitle
         };
 
         if (streamInfo?.filename) {
             info.source = this.extractSource(streamInfo.filename);
-            info.specialEdition = this.extractSpecialEdition(streamInfo.filename);
-            console.log(`[MATCHER] ✅ Extracted from RD filename: source=${info.source}, edition=${info.specialEdition}`);
         }
         
-        if (info.source === 'unknown' && streamInfo?.quality && streamInfo.quality !== 'unknown') {
+        if (info.source === 'unknown' && streamInfo?.quality) {
             info.source = streamInfo.quality;
-            console.log(`[MATCHER] ✅ Using RD detected quality: ${info.source}`);
-        }
-
-        if (info.source === 'unknown' && streamInfo?.size) {
-            info.source = this.estimateQualityFromSize(streamInfo.size);
-            console.log(`[MATCHER] ✅ Using size-based estimate: ${info.source}`);
         }
 
         if (info.source === 'unknown' && fallbackTitle) {
             info.source = this.extractSource(fallbackTitle);
-            info.specialEdition = this.extractSpecialEdition(fallbackTitle);
-            console.log(`[MATCHER] ⚠️  Fallback extraction from title: source=${info.source}`);
         }
 
         return info;
     }
 
     extractSource(title) {
-        const sources = ['bluray', 'bdrip', 'remux', 'web-dl', 'webdl', 'webrip', 'hdtv', 'dvdrip', 'dvdscr', 'hdcam', 'cam', 'ts'];
-        const titleLower = title.toLowerCase();
+        const sources = ['bluray', 'bdrip', 'remux', 'web-dl', 'webdl', 'webrip', 'hdtv', 'dvdrip'];
+        const lower = title.toLowerCase();
         
         for (const source of sources) {
-            if (titleLower.includes(source) || titleLower.includes(source.replace('-', ''))) {
+            if (lower.includes(source) || lower.includes(source.replace('-', ''))) {
                 return source;
             }
         }
         return 'unknown';
     }
 
-    extractSpecialEdition(title) {
-        const titleLower = title.toLowerCase();
-        
-        for (const edition of this.specialEditions) {
-            if (titleLower.includes(edition)) {
-                if (titleLower.includes('extended') && titleLower.includes('cut')) {
-                    return 'extended-cut';
-                }
-                if (titleLower.includes('director') && (titleLower.includes('cut') || titleLower.includes('edition'))) {
-                    return 'directors-cut';
-                }
-                return edition;
-            }
-        }
-        return null;
-    }
-
-    calculateCompatibilityScore(videoInfo, subtitleInfo) {
-        let score = 0;
-
-        if (videoInfo.source === subtitleInfo.source) {
-            score = 100;
-        } else if (this.areSourcesCompatible(videoInfo.source, subtitleInfo.source)) {
-            score = 80;
-        } else if (videoInfo.source !== 'unknown' && subtitleInfo.source !== 'unknown') {
-            score = 40;
-        } else {
-            score = 20;
-        }
-
-        return score;
-    }
-
-    areSourcesCompatible(source1, source2) {
-        const compatible = {
-            'bluray': ['bdrip', 'remux'],
-            'bdrip': ['bluray', 'remux'],
-            'remux': ['bluray', 'bdrip'],
-            'web-dl': ['webdl', 'webrip'],
-            'webdl': ['web-dl', 'webrip'],
-            'webrip': ['web-dl', 'webdl']
-        };
-
-        return compatible[source1]?.includes(source2) || false;
-    }
-
-    rankSubtitles(subtitles, videoInfo, movieTitle = '') {
-        console.log(`[MATCHER] 🏆 Ranking ${subtitles.length} subtitles for video: ${videoInfo.source}`);
-
+    rankSubtitles(subtitles, videoInfo) {
         const ranked = subtitles.map(subtitle => {
-            const subtitleInfo = {
-                source: this.extractSource(subtitle.title || subtitle.videoVersion || ''),
-                originalTitle: subtitle.title
-            };
-
-            let score = this.calculateCompatibilityScore(videoInfo, subtitleInfo);
+            const subSource = this.extractSource(subtitle.title || '');
+            
+            let score = 20; // default
+            if (videoInfo.source === subSource) {
+                score = 100; // perfect match
+            } else if (videoInfo.source !== 'unknown' && subSource !== 'unknown') {
+                score = 40; // both known, different
+            }
             
             subtitle.matchScore = score;
-            subtitle.matchReason = `Source match: ${score}%`;
-
             return subtitle;
         });
 
         ranked.sort((a, b) => b.matchScore - a.matchScore);
-
-        console.log(`[MATCHER] 📋 Top 3 ranked subtitles:`);
-        ranked.slice(0, 3).forEach((sub, idx) => {
-            console.log(`  ${idx + 1}. ${sub.title} - Score: ${sub.matchScore}%`);
-        });
-
         return ranked;
     }
 }
@@ -308,172 +162,191 @@ class SubtitleMatcher {
 class TitulkyClient {
     constructor() {
         this.baseUrl = 'https://www.titulky.com';
-        this.cookies = {};
-        this.lastUsed = Date.now();
-        this.captchaDetected = false;
-    }
-
-    getCookieString() {
-        return Object.entries(this.cookies)
-            .map(([key, value]) => `${key}=${value}`)
-            .join('; ');
     }
 
     async searchSubtitles(query) {
-        console.log(`[TITULKY] 🔍 Searching for: "${query}"`);
+        console.log(`[TITULKY] 🔍 "${query}"`);
         
         try {
-            const searchUrl = `${this.baseUrl}/hledej.php?action=search&searchstring=${encodeURIComponent(query)}`;
+            // Titulky.com má formulář s POST nebo GET na /
+            // Zkusíme obě varianty
             
-            const response = await axios.get(searchUrl, {
+            // Varianta 1: GET request s parametrem
+            let searchUrl = `${this.baseUrl}/?Fulltext=${encodeURIComponent(query)}`;
+            console.log(`[TITULKY] Try 1: ${searchUrl}`);
+            
+            let response = await axios.get(searchUrl, {
                 headers: {
-                    'Cookie': this.getCookieString(),
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Referer': this.baseUrl,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'cs,en;q=0.5'
+                    'Accept-Language': 'cs-CZ,cs;q=0.9',
+                    'Referer': this.baseUrl,
+                    'Connection': 'keep-alive'
                 },
                 timeout: 10000,
-                responseType: 'arraybuffer'
+                maxRedirects: 5,
+                validateStatus: (status) => status >= 200 && status < 400
             });
 
-            let content;
-            const contentEncoding = response.headers['content-encoding'];
+            console.log(`[TITULKY] Response: ${response.status}, ${response.data.length} chars`);
             
-            if (contentEncoding === 'gzip') {
-                content = zlib.gunzipSync(response.data).toString('utf-8');
-            } else if (contentEncoding === 'deflate') {
-                content = zlib.inflateSync(response.data).toString('utf-8');
-            } else {
-                content = response.data.toString('utf-8');
+            let results = this.parseResults(response.data);
+            
+            // Pokud nenašlo, zkus jinou variantu
+            if (results.length === 0) {
+                console.log(`[TITULKY] Try 2: Different parameter format`);
+                searchUrl = `${this.baseUrl}/?action=search&Fulltext=${encodeURIComponent(query)}`;
+                
+                response = await axios.get(searchUrl, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'cs-CZ,cs;q=0.9',
+                        'Referer': this.baseUrl
+                    },
+                    timeout: 10000,
+                    maxRedirects: 5
+                });
+                
+                results = this.parseResults(response.data);
             }
 
-            if (content.toLowerCase().includes('captcha') || content.toLowerCase().includes('recaptcha')) {
-                console.log('[TITULKY] ⚠️  CAPTCHA detected!');
-                this.captchaDetected = true;
-                return [];
-            }
-            
-            // Debug: Save first 1000 chars of response
-            console.log('[TITULKY] 📄 Response preview (first 1000 chars):');
-            console.log(content.substring(0, 1000));
+            // Debug output
+            console.log(`[TITULKY] HTML Preview (first 500 chars):`);
+            console.log(response.data.substring(0, 500));
+            console.log(`[TITULKY] HTML Preview (contains "Longlegs"): ${response.data.includes('Longlegs')}`);
+            console.log(`[TITULKY] HTML Preview (contains "idown"): ${response.data.includes('idown')}`);
 
-            return this.parseSearchResults(content);
+            return results;
             
         } catch (error) {
-            console.error(`[TITULKY] ❌ Search error:`, error.message);
+            console.error(`[TITULKY] ❌ ${error.message}`);
+            if (error.response) {
+                console.error(`[TITULKY] Status: ${error.response.status}`);
+            }
             return [];
         }
     }
 
-    parseSearchResults(html) {
+    parseResults(html) {
         const $ = cheerio.load(html);
         const subtitles = [];
 
         console.log(`[PARSE] HTML length: ${html.length} chars`);
         
-        // Debug: Show what we're actually getting
+        // Debug: Co všechno máme v HTML
+        const linkCount = $('a').length;
         const tableCount = $('table').length;
-        const linkCount = $('a[href*="idown.php"]').length;
-        console.log(`[PARSE] Tables found: ${tableCount}`);
-        console.log(`[PARSE] idown.php links found: ${linkCount}`);
+        const divCount = $('div').length;
         
-        // Try alternative selectors
-        const allLinks = $('a').length;
-        console.log(`[PARSE] Total links found: ${allLinks}`);
-        
-        // Look for subtitle entries
-        $('table tr').each((index, element) => {
-            const $row = $(element);
-            const $link = $row.find('a[href*="idown.php"]');
+        console.log(`[PARSE] Elements: ${linkCount} links, ${tableCount} tables, ${divCount} divs`);
+
+        // Strategie 1: Hledej všechny linky s "idown" v href
+        console.log(`[PARSE] Strategy 1: Looking for idown links...`);
+        $('a[href*="idown"]').each((i, elem) => {
+            const $link = $(elem);
+            const href = $link.attr('href');
+            let title = $link.text().trim();
             
-            if ($link.length > 0) {
-                const href = $link.attr('href');
-                const title = $link.text().trim();
-                
-                console.log(`[PARSE] Found link: "${title}" -> ${href}`);
-                
-                const match = href.match(/id=([^&]+)/);
-                if (match) {
-                    const downloadId = match[1];
-                    
+            console.log(`[PARSE] idown link found: href="${href}", text="${title}"`);
+            
+            // Pokud text je prázdný, podívej se na parent
+            if (!title || title.length < 3) {
+                title = $link.parent().text().trim();
+                console.log(`[PARSE] Using parent text: "${title}"`);
+            }
+            
+            if (href && title && title.length > 3) {
+                const idMatch = href.match(/id[=\/]([^&\/\s]+)/i) || href.match(/idown\.php\?([^&\s]+)/);
+                if (idMatch) {
+                    const url = href.startsWith('http') ? href : `${this.baseUrl}/${href.replace(/^\/+/, '')}`;
                     subtitles.push({
-                        id: downloadId,
-                        title: title,
-                        url: `${this.baseUrl}/${href}`,
+                        id: idMatch[1],
+                        title: title.substring(0, 100), // Limit title length
+                        url: url,
                         language: 'cs',
                         matchScore: 0
                     });
+                    console.log(`[PARSE] ✅ Added: "${title.substring(0, 50)}..."`);
                 }
             }
         });
-        
-        // If no results, try alternative structure
+
+        // Strategie 2: Hledej tabulkové řádky s odkazy
         if (subtitles.length === 0) {
-            console.log(`[PARSE] ⚠️  No results with standard parser, trying alternatives...`);
-            
-            // Try finding all idown links directly
-            $('a[href*="idown.php"]').each((index, element) => {
-                const $link = $(element);
-                const href = $link.attr('href');
-                const title = $link.text().trim();
+            console.log(`[PARSE] Strategy 2: Looking in table rows...`);
+            $('table tr').each((i, row) => {
+                const $row = $(row);
+                const $link = $row.find('a').first();
                 
-                console.log(`[PARSE ALT] Found: "${title}" -> ${href}`);
-                
-                const match = href.match(/id=([^&]+)/);
-                if (match && title) {
-                    const downloadId = match[1];
+                if ($link.length > 0) {
+                    const href = $link.attr('href');
+                    const title = $row.text().trim();
                     
-                    subtitles.push({
-                        id: downloadId,
-                        title: title,
-                        url: `${this.baseUrl}/${href}`,
-                        language: 'cs',
-                        matchScore: 0
-                    });
+                    if (href && href.includes('idown') && title) {
+                        console.log(`[PARSE] Table row: "${title.substring(0, 50)}" -> ${href}`);
+                        
+                        const idMatch = href.match(/id[=\/]([^&\/\s]+)/i);
+                        if (idMatch) {
+                            const url = href.startsWith('http') ? href : `${this.baseUrl}/${href.replace(/^\/+/, '')}`;
+                            subtitles.push({
+                                id: idMatch[1],
+                                title: title.substring(0, 100),
+                                url: url,
+                                language: 'cs',
+                                matchScore: 0
+                            });
+                        }
+                    }
                 }
             });
         }
 
-        console.log(`[TITULKY] ✅ Found ${subtitles.length} subtitles`);
+        // Strategie 3: Dump všech href pro debugging
+        if (subtitles.length === 0) {
+            console.log(`[PARSE] Strategy 3: Debug - showing all hrefs...`);
+            let count = 0;
+            $('a[href]').each((i, elem) => {
+                if (count < 10) { // Jen prvních 10
+                    const href = $(elem).attr('href');
+                    const text = $(elem).text().trim();
+                    console.log(`[PARSE DEBUG] Link ${i}: "${text.substring(0, 30)}" -> ${href}`);
+                    count++;
+                }
+            });
+        }
+
+        console.log(`[TITULKY] Found: ${subtitles.length} subtitles`);
         return subtitles;
     }
 }
 
-// Initialize matcher
 const subtitleMatcher = new SubtitleMatcher();
 
-// Helper function to get movie title from IMDB ID
 async function getMovieTitle(imdbId) {
     try {
-        const omdbUrl = `http://www.omdbapi.com/?i=tt${imdbId}&apikey=trilogy`;
-        console.log(`[OMDB] 📡 Fetching title for IMDB tt${imdbId}`);
+        const response = await axios.get(`http://www.omdbapi.com/?i=tt${imdbId}&apikey=trilogy`, { timeout: 5000 });
         
-        const response = await axios.get(omdbUrl, { timeout: 5000 });
-        
-        if (response.data && response.data.Title && response.data.Response === 'True') {
-            console.log(`[OMDB] ✅ Found: "${response.data.Title}" (${response.data.Year})`);
+        if (response.data?.Title && response.data.Response === 'True') {
+            console.log(`[OMDB] ✅ "${response.data.Title}" (${response.data.Year})`);
             return {
                 title: response.data.Title,
                 year: response.data.Year,
                 type: response.data.Type
             };
         }
-        
-        console.log(`[OMDB] ❌ No title found`);
         return null;
     } catch (error) {
-        console.error(`[OMDB] ❌ Error:`, error.message);
+        console.error(`[OMDB] ❌ ${error.message}`);
         return null;
     }
 }
 
-// Addon manifest (base - without config)
 const baseManifest = {
     id: 'com.titulky.subtitles',
-    version: '2.3.0',
+    version: '3.0.0',
     name: 'Titulky.com + RD',
-    description: 'Czech subtitles with Real-Debrid integration',
+    description: 'Czech subtitles with Real-Debrid',
     logo: 'https://www.titulky.com/favicon.ico',
     resources: ['subtitles'],
     types: ['movie', 'series'],
@@ -489,179 +362,97 @@ const baseManifest = {
 
 // Routes
 app.get('/', (req, res) => {
-    res.json({
-        name: baseManifest.name,
-        version: baseManifest.version,
-        description: baseManifest.description,
-        status: 'OK',
-        endpoints: {
-            manifest_basic: '/manifest.json',
-            manifest_configured: '/{base64config}/manifest.json',
-            subtitles: '/{base64config}/subtitles/{type}/{id}.json'
-        },
-        config_format: {
-            username: 'optional',
-            password: 'optional',
-            realDebridKey: 'your_rd_api_key_here'
-        }
-    });
+    res.json({ name: baseManifest.name, version: baseManifest.version, status: 'OK' });
 });
 
-// Manifest without config
 app.get('/manifest.json', (req, res) => {
-    console.log('[MANIFEST] Serving basic manifest.json');
     res.json(baseManifest);
 });
 
-// Manifest with config
 app.get('/:config/manifest.json', (req, res) => {
-    console.log('[MANIFEST] Serving configured manifest.json');
     const config = decodeConfig(req.params.config);
-    
-    const manifest = {
+    res.json({
         ...baseManifest,
         name: config?.username ? `${baseManifest.name} (${config.username})` : baseManifest.name
-    };
-    
-    res.json(manifest);
-});
-
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
-        timestamp: new Date().toISOString(),
-        version: baseManifest.version
     });
 });
 
-// MAIN SUBTITLE ENDPOINT - Supports both with and without config
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', version: baseManifest.version });
+});
+
+// Main endpoint
 app.get('/:config?/subtitles/:type/:id.json', async (req, res) => {
-    console.log('\n' + '█'.repeat(80));
-    console.log('█ SUBTITLE REQUEST STARTED');
+    console.log('█'.repeat(80));
+    console.log('█ SUBTITLE REQUEST');
     console.log('█'.repeat(80));
     
     try {
         const { config, type, id } = req.params;
         const { filename } = req.query;
         
-        console.log(`[PARAMS] Config: ${config ? 'PROVIDED' : 'NOT PROVIDED'}`);
-        console.log(`[PARAMS] Type: ${type}`);
-        console.log(`[PARAMS] ID: ${id}`);
-        console.log(`[QUERY] Filename param exists: ${filename ? 'YES' : 'NO'}`);
-        console.log(`[QUERY] Filename value: "${filename || 'N/A'}"`);
-        console.log(`[QUERY] All query params:`, req.query);
+        console.log(`[INFO] ${type} / tt${id.replace(/^tt/, '')}`);
+        console.log(`[INFO] Filename: ${filename || 'N/A'}`);
         
-        // Decode config if provided
+        // Decode config
         let userConfig = null;
         if (config && config !== 'subtitles') {
             userConfig = decodeConfig(config);
         }
         
-        // Remove 'tt' prefix if present
         const imdbId = id.replace(/^tt/, '');
-        console.log(`[IMDB] Clean ID: tt${imdbId}`);
         
-        // Get movie title
+        // Get movie info
         const movieInfo = await getMovieTitle(imdbId);
         if (!movieInfo) {
-            console.log(`[ERROR] ❌ Could not fetch movie info for tt${imdbId}`);
             return res.json({ subtitles: [] });
         }
 
-        console.log(`[MOVIE] 🎬 "${movieInfo.title}" (${movieInfo.year})`);
-
-        // Initialize titulky client
-        const titulkyClient = new TitulkyClient();
-        
-        // Get current stream info from Real-Debrid
+        // RD integration
         let streamInfo = null;
         const rdApiKey = userConfig?.realDebridKey;
         
         if (rdApiKey && rdApiKey.length > 10) {
-            console.log(`\n[RD INTEGRATION] 🔐 Attempting to use Real-Debrid...`);
-            console.log(`[RD] User: ${userConfig?.username || 'anonymous'}`);
+            console.log(`[RD] Checking...`);
             const rdClient = new RealDebridClient(rdApiKey);
             streamInfo = await rdClient.getCurrentStream();
             
-            if (streamInfo && streamInfo.filename) {
-                console.log(`[RD] ✅ SUCCESS! Stream detected from torrents`);
-                console.log(`[RD] 🎬 File: ${streamInfo.filename}`);
-                console.log(`[RD] 🎯 Quality: ${streamInfo.quality}`);
-                console.log(`[RD] 📦 Size: ${(streamInfo.size / 1024 / 1024 / 1024).toFixed(2)} GB`);
-            } else {
-                console.log(`[RD] ℹ️  No active torrents found`);
-                
-                // FALLBACK: Use filename from query parameter if available
-                if (filename) {
-                    console.log(`[RD] 💡 Using filename from query parameter as fallback`);
-                    streamInfo = {
-                        filename: filename,
-                        link: null,
-                        size: 0, // Unknown size
-                        quality: rdClient.extractQualityFromFilename(filename)
-                    };
-                    console.log(`[RD] 🎬 Fallback file: ${streamInfo.filename}`);
-                    console.log(`[RD] 🎯 Detected quality: ${streamInfo.quality}`);
-                } else {
-                    console.log(`[RD] ⚠️  No filename in query parameter either`);
-                    streamInfo = null;
-                }
-            }
-        } else {
-            console.log(`\n[RD INTEGRATION] ⚠️  SKIPPED - No valid API key in config`);
-            
-            // Even without RD, use filename from query if available
-            if (filename) {
-                console.log(`[FILENAME] 💡 Using filename from query parameter`);
-                const rdClient = new RealDebridClient('dummy'); // Just for quality extraction
+            if (!streamInfo && filename) {
+                console.log(`[RD] Fallback to filename`);
                 streamInfo = {
                     filename: filename,
-                    link: null,
                     size: 0,
-                    quality: rdClient.extractQualityFromFilename(filename)
+                    quality: rdClient.extractQuality(filename)
                 };
-                console.log(`[FILENAME] 🎬 File: ${streamInfo.filename}`);
-                console.log(`[FILENAME] 🎯 Detected quality: ${streamInfo.quality}`);
             }
+        } else if (filename) {
+            const rdClient = new RealDebridClient('dummy');
+            streamInfo = {
+                filename: filename,
+                size: 0,
+                quality: rdClient.extractQuality(filename)
+            };
         }
 
-        // Extract video info for matching
+        // Video info
         const videoInfo = subtitleMatcher.extractVideoInfo(streamInfo, movieInfo.title);
-        console.log(`\n[VIDEO INFO] Source: ${videoInfo.source}`);
-        console.log(`[VIDEO INFO] Special Edition: ${videoInfo.specialEdition || 'none'}`);
+        console.log(`[VIDEO] ${videoInfo.source}`);
 
-        // Search for subtitles
-        let searchQuery = movieInfo.title; // Try without year first
-        console.log(`\n[SEARCH] Query (without year): "${searchQuery}"`);
-        
-        let subtitles = await titulkyClient.searchSubtitles(searchQuery);
-
-        // If no results, try with year
-        if (subtitles.length === 0) {
-            searchQuery = `${movieInfo.title} ${movieInfo.year}`;
-            console.log(`[SEARCH] No results, trying with year: "${searchQuery}"`);
-            subtitles = await titulkyClient.searchSubtitles(searchQuery);
-        }
-        
-        // If still no results, try just the year
-        if (subtitles.length === 0 && movieInfo.year) {
-            searchQuery = movieInfo.year;
-            console.log(`[SEARCH] Still no results, trying just year: "${searchQuery}"`);
-            subtitles = await titulkyClient.searchSubtitles(searchQuery);
-        }
+        // Search - JEN NÁZEV
+        const titulkyClient = new TitulkyClient();
+        let subtitles = await titulkyClient.searchSubtitles(movieInfo.title);
 
         if (subtitles.length === 0) {
-            console.log(`[SEARCH] ⚠️  No subtitles found`);
-            console.log('█'.repeat(80) + '\n');
+            console.log(`[RESULT] No subtitles\n`);
             return res.json({ subtitles: [] });
         }
 
-        // Rank subtitles based on video info
-        subtitles = subtitleMatcher.rankSubtitles(subtitles, videoInfo, movieInfo.title);
+        // Rank
+        subtitles = subtitleMatcher.rankSubtitles(subtitles, videoInfo);
 
-        // Format response for Stremio
+        // Response
         const response = {
-            subtitles: subtitles.slice(0, 10).map((sub, index) => ({
+            subtitles: subtitles.slice(0, 10).map(sub => ({
                 id: sub.id,
                 url: sub.url,
                 lang: sub.language,
@@ -669,35 +460,19 @@ app.get('/:config?/subtitles/:type/:id.json', async (req, res) => {
             }))
         };
 
-        console.log(`\n[RESPONSE] ✅ Returning ${response.subtitles.length} subtitles`);
-        console.log('█'.repeat(80));
-        console.log('█ REQUEST COMPLETED SUCCESSFULLY');
+        console.log(`[RESULT] ${response.subtitles.length} subtitles`);
         console.log('█'.repeat(80) + '\n');
         
         res.json(response);
         
     } catch (error) {
-        console.error(`\n[ERROR] ❌❌❌ ${error.message}`);
-        console.error(error.stack);
-        console.log('█'.repeat(80) + '\n');
-        res.status(500).json({ 
-            subtitles: [],
-            error: error.message 
-        });
+        console.error(`[ERROR] ${error.message}`);
+        res.status(500).json({ subtitles: [], error: error.message });
     }
 });
 
-// Start server
 app.listen(PORT, () => {
-    console.log('\n' + '🚀'.repeat(40));
-    console.log(`🚀 Titulky.com Addon Server v${baseManifest.version}`);
-    console.log('🚀'.repeat(40));
-    console.log(`📡 Port: ${PORT}`);
-    console.log(`🔗 Manifest: http://localhost:${PORT}/manifest.json`);
-    console.log(`\n📖 USAGE WITH STREMIO CONFIG:`);
-    console.log(`   1. User installs addon with their RD API key`);
-    console.log(`   2. Stremio sends config as base64 in URL`);
-    console.log(`   3. Format: /{base64}/subtitles/movie/tt1234567.json`);
-    console.log(`   4. Each user has their own config = their own RD key!`);
-    console.log('🚀'.repeat(40) + '\n');
+    console.log('\n🚀 Titulky.com Addon v' + baseManifest.version);
+    console.log('📡 Port: ' + PORT);
+    console.log('🔗 http://localhost:' + PORT + '/manifest.json\n');
 });
