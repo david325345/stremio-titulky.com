@@ -1,6 +1,9 @@
 /*
-ENHANCED VERSION WITH DETAILED LOGGING
-Verze 2.2.0 - Debug multi-user RD API keys
+STREMIO ADDON - TITULKY.COM + REAL-DEBRID
+Verze 2.3.0 - Správná podpora Stremio konfigurace (base64)
+
+URL format: /{base64Config}/subtitles/{type}/{id}.json
+Base64 obsahuje: {"username":"...","password":"...","realDebridKey":"..."}
 */
 
 const express = require('express');
@@ -28,14 +31,27 @@ app.use((req, res, next) => {
     console.log(`[${timestamp}] ${req.method} ${req.url}`);
     console.log(`[FULL URL] ${req.protocol}://${req.get('host')}${req.originalUrl}`);
     console.log(`[PATH] ${req.path}`);
-    console.log(`[PARAMS] ${JSON.stringify(req.params)}`);
-    console.log(`[QUERY] ${JSON.stringify(req.query)}`);
     console.log(`${'='.repeat(80)}\n`);
     next();
 });
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Helper to decode base64 config
+function decodeConfig(base64String) {
+    try {
+        const decoded = Buffer.from(base64String, 'base64').toString('utf-8');
+        const config = JSON.parse(decoded);
+        console.log(`[CONFIG] ✅ Decoded successfully`);
+        console.log(`[CONFIG] Username: ${config.username || 'N/A'}`);
+        console.log(`[CONFIG] Has RD Key: ${config.realDebridKey ? 'YES (' + config.realDebridKey.substring(0, 12) + '...)' : 'NO'}`);
+        return config;
+    } catch (error) {
+        console.log(`[CONFIG] ⚠️  Failed to decode: ${error.message}`);
+        return null;
+    }
+}
 
 // Real-Debrid API class
 class RealDebridClient {
@@ -361,57 +377,6 @@ class TitulkyClient {
         console.log(`[TITULKY] ✅ Found ${subtitles.length} subtitles`);
         return subtitles;
     }
-
-    async downloadSubtitle(url) {
-        console.log(`[TITULKY] 📥 Downloading subtitle from: ${url}`);
-        
-        try {
-            const response = await axios.get(url, {
-                headers: {
-                    'Cookie': this.getCookieString(),
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Referer': this.baseUrl
-                },
-                responseType: 'arraybuffer',
-                timeout: 15000
-            });
-
-            return this.extractSrtFromArchive(response.data);
-            
-        } catch (error) {
-            console.error(`[TITULKY] ❌ Download error:`, error.message);
-            return null;
-        }
-    }
-
-    extractSrtFromArchive(buffer) {
-        try {
-            const zip = new AdmZip(buffer);
-            const zipEntries = zip.getEntries();
-
-            for (const entry of zipEntries) {
-                if (entry.entryName.toLowerCase().endsWith('.srt')) {
-                    console.log(`[TITULKY] ✅ Found SRT file: ${entry.entryName}`);
-                    const content = entry.getData();
-                    
-                    let text = content.toString('utf-8');
-                    
-                    if (text.includes('�') || text.includes('\ufffd')) {
-                        text = iconv.decode(content, 'windows-1250');
-                    }
-                    
-                    return text;
-                }
-            }
-
-            console.log('[TITULKY] ⚠️  No SRT file found in archive');
-            return null;
-            
-        } catch (error) {
-            console.error(`[TITULKY] ❌ Error extracting SRT:`, error.message);
-            return null;
-        }
-    }
 }
 
 // Initialize matcher
@@ -442,12 +407,12 @@ async function getMovieTitle(imdbId) {
     }
 }
 
-// Addon manifest
-const manifest = {
+// Addon manifest (base - without config)
+const baseManifest = {
     id: 'com.titulky.subtitles',
-    version: '2.2.0',
-    name: 'Titulky.com + RD (Multi-User)',
-    description: 'Czech subtitles with per-user Real-Debrid integration',
+    version: '2.3.0',
+    name: 'Titulky.com + RD',
+    description: 'Czech subtitles with Real-Debrid integration',
     logo: 'https://www.titulky.com/favicon.ico',
     resources: ['subtitles'],
     types: ['movie', 'series'],
@@ -464,24 +429,39 @@ const manifest = {
 // Routes
 app.get('/', (req, res) => {
     res.json({
-        name: manifest.name,
-        version: manifest.version,
-        description: manifest.description,
+        name: baseManifest.name,
+        version: baseManifest.version,
+        description: baseManifest.description,
         status: 'OK',
         endpoints: {
-            manifest: '/manifest.json',
-            subtitles_basic: '/subtitles/:type/:id.json',
-            subtitles_with_rd: '/subtitles/:type/:id/:rdApiKey.json'
+            manifest_basic: '/manifest.json',
+            manifest_configured: '/{base64config}/manifest.json',
+            subtitles: '/{base64config}/subtitles/{type}/{id}.json'
         },
-        usage: {
-            without_rd: 'GET /subtitles/movie/tt1234567.json',
-            with_rd: 'GET /subtitles/movie/tt1234567/YOUR_RD_API_KEY.json'
+        config_format: {
+            username: 'optional',
+            password: 'optional',
+            realDebridKey: 'your_rd_api_key_here'
         }
     });
 });
 
+// Manifest without config
 app.get('/manifest.json', (req, res) => {
-    console.log('[MANIFEST] Serving manifest.json');
+    console.log('[MANIFEST] Serving basic manifest.json');
+    res.json(baseManifest);
+});
+
+// Manifest with config
+app.get('/:config/manifest.json', (req, res) => {
+    console.log('[MANIFEST] Serving configured manifest.json');
+    const config = decodeConfig(req.params.config);
+    
+    const manifest = {
+        ...baseManifest,
+        name: config?.username ? `${baseManifest.name} (${config.username})` : baseManifest.name
+    };
+    
     res.json(manifest);
 });
 
@@ -489,29 +469,29 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
         timestamp: new Date().toISOString(),
-        version: manifest.version
+        version: baseManifest.version
     });
 });
 
-// MAIN SUBTITLE ENDPOINT WITH DETAILED LOGGING
-app.get('/subtitles/:type/:id/:rdApiKey?.json', async (req, res) => {
+// MAIN SUBTITLE ENDPOINT - Supports both with and without config
+app.get('/:config?/subtitles/:type/:id.json', async (req, res) => {
     console.log('\n' + '█'.repeat(80));
     console.log('█ SUBTITLE REQUEST STARTED');
     console.log('█'.repeat(80));
     
     try {
-        const { type, id, rdApiKey } = req.params;
+        const { config, type, id } = req.params;
+        const { filename } = req.query;
         
-        console.log(`[PARAMS] type: ${type}`);
-        console.log(`[PARAMS] id: ${id}`);
-        console.log(`[PARAMS] rdApiKey: ${rdApiKey || 'NOT PROVIDED'}`);
+        console.log(`[PARAMS] Config: ${config ? 'PROVIDED' : 'NOT PROVIDED'}`);
+        console.log(`[PARAMS] Type: ${type}`);
+        console.log(`[PARAMS] ID: ${id}`);
+        console.log(`[QUERY] Filename: ${filename || 'N/A'}`);
         
-        if (rdApiKey) {
-            console.log(`[API KEY] Length: ${rdApiKey.length}`);
-            console.log(`[API KEY] Preview: ${rdApiKey.substring(0, 12)}...`);
-            console.log(`[API KEY] Full (for debug): ${rdApiKey}`);
-        } else {
-            console.log(`[API KEY] ⚠️  NO API KEY PROVIDED - RD integration disabled`);
+        // Decode config if provided
+        let userConfig = null;
+        if (config && config !== 'subtitles') {
+            userConfig = decodeConfig(config);
         }
         
         // Remove 'tt' prefix if present
@@ -532,8 +512,11 @@ app.get('/subtitles/:type/:id/:rdApiKey?.json', async (req, res) => {
         
         // Get current stream info from Real-Debrid
         let streamInfo = null;
+        const rdApiKey = userConfig?.realDebridKey;
+        
         if (rdApiKey && rdApiKey.length > 10) {
             console.log(`\n[RD INTEGRATION] 🔐 Attempting to use Real-Debrid...`);
+            console.log(`[RD] User: ${userConfig?.username || 'anonymous'}`);
             const rdClient = new RealDebridClient(rdApiKey);
             streamInfo = await rdClient.getCurrentStream();
             
@@ -546,7 +529,7 @@ app.get('/subtitles/:type/:id/:rdApiKey?.json', async (req, res) => {
                 console.log(`[RD] ℹ️  No active stream (user not currently watching)`);
             }
         } else {
-            console.log(`\n[RD INTEGRATION] ⚠️  SKIPPED - No valid API key`);
+            console.log(`\n[RD INTEGRATION] ⚠️  SKIPPED - No valid API key in config`);
         }
 
         // Extract video info for matching
@@ -600,14 +583,14 @@ app.get('/subtitles/:type/:id/:rdApiKey?.json', async (req, res) => {
 // Start server
 app.listen(PORT, () => {
     console.log('\n' + '🚀'.repeat(40));
-    console.log(`🚀 Titulky.com Addon Server v${manifest.version}`);
+    console.log(`🚀 Titulky.com Addon Server v${baseManifest.version}`);
     console.log('🚀'.repeat(40));
     console.log(`📡 Port: ${PORT}`);
     console.log(`🔗 Manifest: http://localhost:${PORT}/manifest.json`);
-    console.log(`\n📖 USAGE INSTRUCTIONS:`);
-    console.log(`   Without RD: /subtitles/movie/tt1234567.json`);
-    console.log(`   With RD:    /subtitles/movie/tt1234567/YOUR_API_KEY.json`);
-    console.log(`\n⚠️  IMPORTANT: Each user MUST use their own RD API key!`);
-    console.log(`   The API key is extracted from the URL path parameter.`);
+    console.log(`\n📖 USAGE WITH STREMIO CONFIG:`);
+    console.log(`   1. User installs addon with their RD API key`);
+    console.log(`   2. Stremio sends config as base64 in URL`);
+    console.log(`   3. Format: /{base64}/subtitles/movie/tt1234567.json`);
+    console.log(`   4. Each user has their own config = their own RD key!`);
     console.log('🚀'.repeat(40) + '\n');
 });
