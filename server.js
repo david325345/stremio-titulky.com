@@ -148,31 +148,31 @@ class TitulkyClient {
                         'Origin': this.baseUrl
                     },
                     timeout: 10000,
-                    maxRedirects: 5
+                    maxRedirects: 10,
+                    validateStatus: (status) => status >= 200 && status < 400
                 }
             );
 
             this.saveCookies(response);
             
-            const html = response.data;
-            
-            // Check for successful login indicators
-            const isLoggedIn = html.includes(this.username) || 
-                             html.toLowerCase().includes('odhlásit') || 
-                             html.toLowerCase().includes('logout') ||
-                             this.cookies['user_id'] || 
-                             this.cookies['PHPSESSID'];
-            
             console.log(`[LOGIN] Cookies: ${Object.keys(this.cookies).join(', ')}`);
             
-            if (isLoggedIn) {
-                console.log('[LOGIN] ✅ Success!');
+            // Simple success check: if we got LogonLogin and LogonId cookies, we're logged in
+            if (this.cookies['LogonLogin'] && this.cookies['LogonId']) {
+                console.log('[LOGIN] ✅ Success! (cookies received)');
                 this.loggedIn = true;
                 return true;
             }
             
-            console.log('[LOGIN] ❌ Failed - check credentials');
-            console.log(`[LOGIN] Response length: ${html.length}`);
+            // Fallback: check HTML content
+            const html = response.data || '';
+            if (html.includes(this.username) || html.toLowerCase().includes('odhlásit')) {
+                console.log('[LOGIN] ✅ Success! (HTML check)');
+                this.loggedIn = true;
+                return true;
+            }
+            
+            console.log('[LOGIN] ❌ Failed - no login cookies');
             return false;
             
         } catch (error) {
