@@ -1,22 +1,6 @@
 /*
-PACKAGE.JSON DEPENDENCIES:
-{
-  "name": "stremio-titulky-addon",
-  "version": "2.1.0",
-  "main": "index.js",
-  "dependencies": {
-    "express": "^4.18.2",
-    "axios": "^1.4.0",
-    "cheerio": "^1.0.0-rc.12",
-    "cors": "^2.8.5",
-    "adm-zip": "^0.5.10",
-    "iconv-lite": "^0.6.3"
-  }
-}
-
-OPRAVA: API klíč se nyní správně extrahuje z URL parametru pro každého uživatele
-Format URL: /subtitles/:type/:id/:rdApiKey.json
-Příklad: /subtitles/movie/tt1234567/YOUR_RD_API_KEY.json
+ENHANCED VERSION WITH DETAILED LOGGING
+Verze 2.2.0 - Debug multi-user RD API keys
 */
 
 const express = require('express');
@@ -37,14 +21,16 @@ app.use(cors({
     credentials: false
 }));
 
-// Middleware pro logování všech požadavků
+// ENHANCED LOGGING MIDDLEWARE
 app.use((req, res, next) => {
     const timestamp = new Date().toISOString();
+    console.log(`\n${'='.repeat(80)}`);
     console.log(`[${timestamp}] ${req.method} ${req.url}`);
-    console.log(`[REQUEST] Headers:`, JSON.stringify(req.headers, null, 2));
-    if (req.body && Object.keys(req.body).length > 0) {
-        console.log(`[REQUEST] Body:`, req.body);
-    }
+    console.log(`[FULL URL] ${req.protocol}://${req.get('host')}${req.originalUrl}`);
+    console.log(`[PATH] ${req.path}`);
+    console.log(`[PARAMS] ${JSON.stringify(req.params)}`);
+    console.log(`[QUERY] ${JSON.stringify(req.query)}`);
+    console.log(`${'='.repeat(80)}\n`);
     next();
 });
 
@@ -56,11 +42,13 @@ class RealDebridClient {
     constructor(apiKey) {
         this.apiKey = apiKey;
         this.baseUrl = 'https://api.real-debrid.com/rest/1.0';
+        console.log(`[RD CLIENT] Created with key: ${apiKey ? apiKey.substring(0, 12) + '...' : 'NONE'}`);
     }
 
     async getCurrentStream() {
         try {
-            console.log('[RD] Fetching current streaming info');
+            console.log('[RD] 📡 Fetching current streaming info...');
+            console.log(`[RD] 🔑 Using API key: ${this.apiKey.substring(0, 12)}...`);
             
             const response = await axios.get(`${this.baseUrl}/streaming/active`, {
                 headers: {
@@ -69,9 +57,13 @@ class RealDebridClient {
                 timeout: 5000
             });
 
+            console.log(`[RD] ✅ API Response status: ${response.status}`);
+            console.log(`[RD] 📊 Active streams count: ${response.data?.length || 0}`);
+
             if (response.data && response.data.length > 0) {
                 const activeStream = response.data[0];
-                console.log(`[RD] Active stream found: ${activeStream.filename}`);
+                console.log(`[RD] 🎬 Active stream found: ${activeStream.filename}`);
+                console.log(`[RD] 📦 Size: ${(activeStream.filesize / 1024 / 1024 / 1024).toFixed(2)} GB`);
                 return {
                     filename: activeStream.filename,
                     link: activeStream.link,
@@ -80,10 +72,14 @@ class RealDebridClient {
                 };
             }
 
-            console.log('[RD] No active streams found');
+            console.log('[RD] ℹ️  No active streams found');
             return null;
         } catch (error) {
-            console.error('[RD] Error fetching stream info:', error.message);
+            console.error('[RD] ❌ Error fetching stream info:', error.message);
+            if (error.response) {
+                console.error(`[RD] ❌ Response status: ${error.response.status}`);
+                console.error(`[RD] ❌ Response data:`, error.response.data);
+            }
             return null;
         }
     }
@@ -104,7 +100,7 @@ class RealDebridClient {
         
         for (const [quality, patterns] of Object.entries(qualityPatterns)) {
             if (patterns.some(pattern => filenameLower.includes(pattern))) {
-                console.log(`[RD] Detected quality from filename: ${quality}`);
+                console.log(`[RD] 🎯 Detected quality from filename: ${quality}`);
                 return quality;
             }
         }
@@ -147,7 +143,7 @@ class SubtitleMatcher {
 
     estimateQualityFromSize(sizeInBytes) {
         const sizeInGB = sizeInBytes / (1024 * 1024 * 1024);
-        console.log(`[MATCHER] Estimating quality from size: ${sizeInGB.toFixed(2)} GB`);
+        console.log(`[MATCHER] 📏 Estimating quality from size: ${sizeInGB.toFixed(2)} GB`);
 
         if (sizeInGB >= 50) return 'remux';
         if (sizeInGB >= 25) return 'bluray';
@@ -158,7 +154,7 @@ class SubtitleMatcher {
     }
 
     extractVideoInfo(streamInfo, fallbackTitle = '') {
-        console.log(`[MATCHER] Analyzing stream info:`, streamInfo);
+        console.log(`[MATCHER] 🔍 Analyzing stream info...`);
         
         let info = {
             source: 'unknown',
@@ -169,23 +165,23 @@ class SubtitleMatcher {
         if (streamInfo?.filename) {
             info.source = this.extractSource(streamInfo.filename);
             info.specialEdition = this.extractSpecialEdition(streamInfo.filename);
-            console.log(`[MATCHER] Extracted from RD filename: source=${info.source}, edition=${info.specialEdition}`);
+            console.log(`[MATCHER] ✅ Extracted from RD filename: source=${info.source}, edition=${info.specialEdition}`);
         }
         
         if (info.source === 'unknown' && streamInfo?.quality && streamInfo.quality !== 'unknown') {
             info.source = streamInfo.quality;
-            console.log(`[MATCHER] Using RD detected quality: ${info.source}`);
+            console.log(`[MATCHER] ✅ Using RD detected quality: ${info.source}`);
         }
 
         if (info.source === 'unknown' && streamInfo?.size) {
             info.source = this.estimateQualityFromSize(streamInfo.size);
-            console.log(`[MATCHER] Using size-based estimate: ${info.source}`);
+            console.log(`[MATCHER] ✅ Using size-based estimate: ${info.source}`);
         }
 
         if (info.source === 'unknown' && fallbackTitle) {
             info.source = this.extractSource(fallbackTitle);
             info.specialEdition = this.extractSpecialEdition(fallbackTitle);
-            console.log(`[MATCHER] Fallback extraction from title: source=${info.source}`);
+            console.log(`[MATCHER] ⚠️  Fallback extraction from title: source=${info.source}`);
         }
 
         return info;
@@ -221,21 +217,15 @@ class SubtitleMatcher {
     }
 
     calculateCompatibilityScore(videoInfo, subtitleInfo) {
-        console.log(`[MATCHER] Comparing video source "${videoInfo.source}" with subtitle source "${subtitleInfo.source}"`);
-
         let score = 0;
 
         if (videoInfo.source === subtitleInfo.source) {
-            console.log(`[MATCHER] Perfect source match: 100%`);
             score = 100;
         } else if (this.areSourcesCompatible(videoInfo.source, subtitleInfo.source)) {
-            console.log(`[MATCHER] Compatible sources: 80%`);
             score = 80;
         } else if (videoInfo.source !== 'unknown' && subtitleInfo.source !== 'unknown') {
-            console.log(`[MATCHER] Different known sources: 40%`);
             score = 40;
         } else {
-            console.log(`[MATCHER] Unknown source: 20%`);
             score = 20;
         }
 
@@ -256,7 +246,7 @@ class SubtitleMatcher {
     }
 
     rankSubtitles(subtitles, videoInfo, movieTitle = '') {
-        console.log(`[MATCHER] Ranking ${subtitles.length} subtitles for video: ${videoInfo.source}`);
+        console.log(`[MATCHER] 🏆 Ranking ${subtitles.length} subtitles for video: ${videoInfo.source}`);
 
         const ranked = subtitles.map(subtitle => {
             const subtitleInfo = {
@@ -274,9 +264,9 @@ class SubtitleMatcher {
 
         ranked.sort((a, b) => b.matchScore - a.matchScore);
 
-        console.log(`[MATCHER] Top 3 ranked subtitles:`);
+        console.log(`[MATCHER] 📋 Top 3 ranked subtitles:`);
         ranked.slice(0, 3).forEach((sub, idx) => {
-            console.log(`  ${idx + 1}. ${sub.title} - Score: ${sub.matchScore}% (${sub.matchReason})`);
+            console.log(`  ${idx + 1}. ${sub.title} - Score: ${sub.matchScore}%`);
         });
 
         return ranked;
@@ -299,7 +289,7 @@ class TitulkyClient {
     }
 
     async searchSubtitles(query) {
-        console.log(`[TITULKY] Searching for: "${query}"`);
+        console.log(`[TITULKY] 🔍 Searching for: "${query}"`);
         
         try {
             const searchUrl = `${this.baseUrl}/hledej.php?action=search&searchstring=${encodeURIComponent(query)}`;
@@ -328,7 +318,7 @@ class TitulkyClient {
             }
 
             if (content.toLowerCase().includes('captcha') || content.toLowerCase().includes('recaptcha')) {
-                console.log('[TITULKY] CAPTCHA detected!');
+                console.log('[TITULKY] ⚠️  CAPTCHA detected!');
                 this.captchaDetected = true;
                 return [];
             }
@@ -336,7 +326,7 @@ class TitulkyClient {
             return this.parseSearchResults(content);
             
         } catch (error) {
-            console.error(`[TITULKY] Search error:`, error.message);
+            console.error(`[TITULKY] ❌ Search error:`, error.message);
             return [];
         }
     }
@@ -368,12 +358,12 @@ class TitulkyClient {
             }
         });
 
-        console.log(`[TITULKY] Found ${subtitles.length} subtitles`);
+        console.log(`[TITULKY] ✅ Found ${subtitles.length} subtitles`);
         return subtitles;
     }
 
     async downloadSubtitle(url) {
-        console.log(`[TITULKY] Downloading subtitle from: ${url}`);
+        console.log(`[TITULKY] 📥 Downloading subtitle from: ${url}`);
         
         try {
             const response = await axios.get(url, {
@@ -389,7 +379,7 @@ class TitulkyClient {
             return this.extractSrtFromArchive(response.data);
             
         } catch (error) {
-            console.error(`[TITULKY] Download error:`, error.message);
+            console.error(`[TITULKY] ❌ Download error:`, error.message);
             return null;
         }
     }
@@ -401,13 +391,11 @@ class TitulkyClient {
 
             for (const entry of zipEntries) {
                 if (entry.entryName.toLowerCase().endsWith('.srt')) {
-                    console.log(`[TITULKY] Found SRT file: ${entry.entryName}`);
+                    console.log(`[TITULKY] ✅ Found SRT file: ${entry.entryName}`);
                     const content = entry.getData();
                     
-                    // Try UTF-8 first
                     let text = content.toString('utf-8');
                     
-                    // If contains weird characters, try windows-1250
                     if (text.includes('�') || text.includes('\ufffd')) {
                         text = iconv.decode(content, 'windows-1250');
                     }
@@ -416,11 +404,11 @@ class TitulkyClient {
                 }
             }
 
-            console.log('[TITULKY] No SRT file found in archive');
+            console.log('[TITULKY] ⚠️  No SRT file found in archive');
             return null;
             
         } catch (error) {
-            console.error(`[TITULKY] Error extracting SRT:`, error.message);
+            console.error(`[TITULKY] ❌ Error extracting SRT:`, error.message);
             return null;
         }
     }
@@ -433,12 +421,12 @@ const subtitleMatcher = new SubtitleMatcher();
 async function getMovieTitle(imdbId) {
     try {
         const omdbUrl = `http://www.omdbapi.com/?i=tt${imdbId}&apikey=trilogy`;
-        console.log(`[OMDB] Fetching title for IMDB ${imdbId}`);
+        console.log(`[OMDB] 📡 Fetching title for IMDB tt${imdbId}`);
         
         const response = await axios.get(omdbUrl, { timeout: 5000 });
         
         if (response.data && response.data.Title && response.data.Response === 'True') {
-            console.log(`[OMDB] Found title: "${response.data.Title}" (${response.data.Year})`);
+            console.log(`[OMDB] ✅ Found: "${response.data.Title}" (${response.data.Year})`);
             return {
                 title: response.data.Title,
                 year: response.data.Year,
@@ -446,9 +434,10 @@ async function getMovieTitle(imdbId) {
             };
         }
         
+        console.log(`[OMDB] ❌ No title found`);
         return null;
     } catch (error) {
-        console.error(`[OMDB] Error:`, error.message);
+        console.error(`[OMDB] ❌ Error:`, error.message);
         return null;
     }
 }
@@ -456,9 +445,9 @@ async function getMovieTitle(imdbId) {
 // Addon manifest
 const manifest = {
     id: 'com.titulky.subtitles',
-    version: '2.1.0',
-    name: 'Titulky.com Subtitles + RD',
-    description: 'Czech and Slovak subtitles from Titulky.com with Real-Debrid integration',
+    version: '2.2.0',
+    name: 'Titulky.com + RD (Multi-User)',
+    description: 'Czech subtitles with per-user Real-Debrid integration',
     logo: 'https://www.titulky.com/favicon.ico',
     resources: ['subtitles'],
     types: ['movie', 'series'],
@@ -478,73 +467,102 @@ app.get('/', (req, res) => {
         name: manifest.name,
         version: manifest.version,
         description: manifest.description,
+        status: 'OK',
         endpoints: {
             manifest: '/manifest.json',
-            subtitles: '/subtitles/:type/:id.json (without RD)',
-            subtitlesWithRD: '/subtitles/:type/:id/:rdApiKey.json (with RD integration)'
+            subtitles_basic: '/subtitles/:type/:id.json',
+            subtitles_with_rd: '/subtitles/:type/:id/:rdApiKey.json'
+        },
+        usage: {
+            without_rd: 'GET /subtitles/movie/tt1234567.json',
+            with_rd: 'GET /subtitles/movie/tt1234567/YOUR_RD_API_KEY.json'
         }
     });
 });
 
 app.get('/manifest.json', (req, res) => {
+    console.log('[MANIFEST] Serving manifest.json');
     res.json(manifest);
 });
 
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        version: manifest.version
+    });
 });
 
-// OPRAVENÝ ENDPOINT - správně extrahuje API klíč z URL
+// MAIN SUBTITLE ENDPOINT WITH DETAILED LOGGING
 app.get('/subtitles/:type/:id/:rdApiKey?.json', async (req, res) => {
+    console.log('\n' + '█'.repeat(80));
+    console.log('█ SUBTITLE REQUEST STARTED');
+    console.log('█'.repeat(80));
+    
     try {
         const { type, id, rdApiKey } = req.params;
         
+        console.log(`[PARAMS] type: ${type}`);
+        console.log(`[PARAMS] id: ${id}`);
+        console.log(`[PARAMS] rdApiKey: ${rdApiKey || 'NOT PROVIDED'}`);
+        
+        if (rdApiKey) {
+            console.log(`[API KEY] Length: ${rdApiKey.length}`);
+            console.log(`[API KEY] Preview: ${rdApiKey.substring(0, 12)}...`);
+            console.log(`[API KEY] Full (for debug): ${rdApiKey}`);
+        } else {
+            console.log(`[API KEY] ⚠️  NO API KEY PROVIDED - RD integration disabled`);
+        }
+        
         // Remove 'tt' prefix if present
         const imdbId = id.replace(/^tt/, '');
-        
-        console.log(`\n========== NEW SUBTITLE REQUEST ==========`);
-        console.log(`[REQUEST] Type: ${type}, IMDB: tt${imdbId}`);
-        console.log(`[REQUEST] RD API Key provided: ${rdApiKey ? 'YES (' + rdApiKey.substring(0, 8) + '...)' : 'NO'}`);
+        console.log(`[IMDB] Clean ID: tt${imdbId}`);
         
         // Get movie title
         const movieInfo = await getMovieTitle(imdbId);
         if (!movieInfo) {
-            console.log(`[ERROR] Could not fetch movie info for tt${imdbId}`);
+            console.log(`[ERROR] ❌ Could not fetch movie info for tt${imdbId}`);
             return res.json({ subtitles: [] });
         }
 
-        console.log(`[INFO] Movie: "${movieInfo.title}" (${movieInfo.year})`);
+        console.log(`[MOVIE] 🎬 "${movieInfo.title}" (${movieInfo.year})`);
 
         // Initialize titulky client
         const titulkyClient = new TitulkyClient();
         
-        // Get current stream info from Real-Debrid (if API key provided)
+        // Get current stream info from Real-Debrid
         let streamInfo = null;
         if (rdApiKey && rdApiKey.length > 10) {
-            console.log(`[RD] Creating client with API key: ${rdApiKey.substring(0, 8)}...`);
+            console.log(`\n[RD INTEGRATION] 🔐 Attempting to use Real-Debrid...`);
             const rdClient = new RealDebridClient(rdApiKey);
             streamInfo = await rdClient.getCurrentStream();
             
             if (streamInfo) {
-                console.log(`[RD] Stream detected: ${streamInfo.filename}`);
-                console.log(`[RD] Quality: ${streamInfo.quality}, Size: ${(streamInfo.size / 1024 / 1024 / 1024).toFixed(2)} GB`);
+                console.log(`[RD] ✅ SUCCESS! Stream detected`);
+                console.log(`[RD] 🎬 File: ${streamInfo.filename}`);
+                console.log(`[RD] 🎯 Quality: ${streamInfo.quality}`);
+                console.log(`[RD] 📦 Size: ${(streamInfo.size / 1024 / 1024 / 1024).toFixed(2)} GB`);
             } else {
-                console.log(`[RD] No active stream found`);
+                console.log(`[RD] ℹ️  No active stream (user not currently watching)`);
             }
         } else {
-            console.log(`[RD] No API key provided, skipping RD integration`);
+            console.log(`\n[RD INTEGRATION] ⚠️  SKIPPED - No valid API key`);
         }
 
         // Extract video info for matching
         const videoInfo = subtitleMatcher.extractVideoInfo(streamInfo, movieInfo.title);
-        console.log(`[VIDEO] Source: ${videoInfo.source}, Special: ${videoInfo.specialEdition || 'none'}`);
+        console.log(`\n[VIDEO INFO] Source: ${videoInfo.source}`);
+        console.log(`[VIDEO INFO] Special Edition: ${videoInfo.specialEdition || 'none'}`);
 
         // Search for subtitles
         const searchQuery = `${movieInfo.title} ${movieInfo.year}`;
+        console.log(`\n[SEARCH] Query: "${searchQuery}"`);
+        
         let subtitles = await titulkyClient.searchSubtitles(searchQuery);
 
         if (subtitles.length === 0) {
-            console.log(`[WARN] No subtitles found for "${searchQuery}"`);
+            console.log(`[SEARCH] ⚠️  No subtitles found`);
+            console.log('█'.repeat(80) + '\n');
             return res.json({ subtitles: [] });
         }
 
@@ -557,21 +575,21 @@ app.get('/subtitles/:type/:id/:rdApiKey?.json', async (req, res) => {
                 id: sub.id,
                 url: sub.url,
                 lang: sub.language,
-                // Add ranking info to title
-                title: `${sub.title} [${sub.matchScore}% match]`,
-                // For direct playback
-                download_url: sub.url
+                title: `${sub.title} [${sub.matchScore}%]`
             }))
         };
 
-        console.log(`[SUCCESS] Returning ${response.subtitles.length} subtitles`);
-        console.log(`==========================================\n`);
+        console.log(`\n[RESPONSE] ✅ Returning ${response.subtitles.length} subtitles`);
+        console.log('█'.repeat(80));
+        console.log('█ REQUEST COMPLETED SUCCESSFULLY');
+        console.log('█'.repeat(80) + '\n');
         
         res.json(response);
         
     } catch (error) {
-        console.error(`[ERROR] ${error.message}`);
+        console.error(`\n[ERROR] ❌❌❌ ${error.message}`);
         console.error(error.stack);
+        console.log('█'.repeat(80) + '\n');
         res.status(500).json({ 
             subtitles: [],
             error: error.message 
@@ -581,12 +599,15 @@ app.get('/subtitles/:type/:id/:rdApiKey?.json', async (req, res) => {
 
 // Start server
 app.listen(PORT, () => {
-    console.log(`\n🚀 Titulky.com Addon Server Started`);
+    console.log('\n' + '🚀'.repeat(40));
+    console.log(`🚀 Titulky.com Addon Server v${manifest.version}`);
+    console.log('🚀'.repeat(40));
     console.log(`📡 Port: ${PORT}`);
     console.log(`🔗 Manifest: http://localhost:${PORT}/manifest.json`);
-    console.log(`\n📖 Usage:`);
+    console.log(`\n📖 USAGE INSTRUCTIONS:`);
     console.log(`   Without RD: /subtitles/movie/tt1234567.json`);
     console.log(`   With RD:    /subtitles/movie/tt1234567/YOUR_API_KEY.json`);
-    console.log(`\n⚠️  Each user must use their own RD API key in the URL!`);
-    console.log(`=====================================\n`);
+    console.log(`\n⚠️  IMPORTANT: Each user MUST use their own RD API key!`);
+    console.log(`   The API key is extracted from the URL path parameter.`);
+    console.log('🚀'.repeat(40) + '\n');
 });
