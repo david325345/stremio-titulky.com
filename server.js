@@ -501,7 +501,9 @@ app.get('/:config?/subtitles/:type/:id.json', async (req, res) => {
         console.log(`[PARAMS] Config: ${config ? 'PROVIDED' : 'NOT PROVIDED'}`);
         console.log(`[PARAMS] Type: ${type}`);
         console.log(`[PARAMS] ID: ${id}`);
-        console.log(`[QUERY] Filename: ${filename || 'N/A'}`);
+        console.log(`[QUERY] Filename param exists: ${filename ? 'YES' : 'NO'}`);
+        console.log(`[QUERY] Filename value: "${filename || 'N/A'}"`);
+        console.log(`[QUERY] All query params:`, req.query);
         
         // Decode config if provided
         let userConfig = null;
@@ -535,16 +537,46 @@ app.get('/:config?/subtitles/:type/:id.json', async (req, res) => {
             const rdClient = new RealDebridClient(rdApiKey);
             streamInfo = await rdClient.getCurrentStream();
             
-            if (streamInfo) {
-                console.log(`[RD] ✅ SUCCESS! Stream detected`);
+            if (streamInfo && streamInfo.filename) {
+                console.log(`[RD] ✅ SUCCESS! Stream detected from torrents`);
                 console.log(`[RD] 🎬 File: ${streamInfo.filename}`);
                 console.log(`[RD] 🎯 Quality: ${streamInfo.quality}`);
                 console.log(`[RD] 📦 Size: ${(streamInfo.size / 1024 / 1024 / 1024).toFixed(2)} GB`);
             } else {
-                console.log(`[RD] ℹ️  No active stream (user not currently watching)`);
+                console.log(`[RD] ℹ️  No active torrents found`);
+                
+                // FALLBACK: Use filename from query parameter if available
+                if (filename) {
+                    console.log(`[RD] 💡 Using filename from query parameter as fallback`);
+                    streamInfo = {
+                        filename: filename,
+                        link: null,
+                        size: 0, // Unknown size
+                        quality: rdClient.extractQualityFromFilename(filename)
+                    };
+                    console.log(`[RD] 🎬 Fallback file: ${streamInfo.filename}`);
+                    console.log(`[RD] 🎯 Detected quality: ${streamInfo.quality}`);
+                } else {
+                    console.log(`[RD] ⚠️  No filename in query parameter either`);
+                    streamInfo = null;
+                }
             }
         } else {
             console.log(`\n[RD INTEGRATION] ⚠️  SKIPPED - No valid API key in config`);
+            
+            // Even without RD, use filename from query if available
+            if (filename) {
+                console.log(`[FILENAME] 💡 Using filename from query parameter`);
+                const rdClient = new RealDebridClient('dummy'); // Just for quality extraction
+                streamInfo = {
+                    filename: filename,
+                    link: null,
+                    size: 0,
+                    quality: rdClient.extractQualityFromFilename(filename)
+                };
+                console.log(`[FILENAME] 🎬 File: ${streamInfo.filename}`);
+                console.log(`[FILENAME] 🎯 Detected quality: ${streamInfo.quality}`);
+            }
         }
 
         // Extract video info for matching
