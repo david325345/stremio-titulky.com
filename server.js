@@ -353,6 +353,10 @@ class TitulkyClient {
                 this.captchaDetected = true;
                 return [];
             }
+            
+            // Debug: Save first 1000 chars of response
+            console.log('[TITULKY] 📄 Response preview (first 1000 chars):');
+            console.log(content.substring(0, 1000));
 
             return this.parseSearchResults(content);
             
@@ -366,6 +370,19 @@ class TitulkyClient {
         const $ = cheerio.load(html);
         const subtitles = [];
 
+        console.log(`[PARSE] HTML length: ${html.length} chars`);
+        
+        // Debug: Show what we're actually getting
+        const tableCount = $('table').length;
+        const linkCount = $('a[href*="idown.php"]').length;
+        console.log(`[PARSE] Tables found: ${tableCount}`);
+        console.log(`[PARSE] idown.php links found: ${linkCount}`);
+        
+        // Try alternative selectors
+        const allLinks = $('a').length;
+        console.log(`[PARSE] Total links found: ${allLinks}`);
+        
+        // Look for subtitle entries
         $('table tr').each((index, element) => {
             const $row = $(element);
             const $link = $row.find('a[href*="idown.php"]');
@@ -373,6 +390,8 @@ class TitulkyClient {
             if ($link.length > 0) {
                 const href = $link.attr('href');
                 const title = $link.text().trim();
+                
+                console.log(`[PARSE] Found link: "${title}" -> ${href}`);
                 
                 const match = href.match(/id=([^&]+)/);
                 if (match) {
@@ -388,6 +407,33 @@ class TitulkyClient {
                 }
             }
         });
+        
+        // If no results, try alternative structure
+        if (subtitles.length === 0) {
+            console.log(`[PARSE] ⚠️  No results with standard parser, trying alternatives...`);
+            
+            // Try finding all idown links directly
+            $('a[href*="idown.php"]').each((index, element) => {
+                const $link = $(element);
+                const href = $link.attr('href');
+                const title = $link.text().trim();
+                
+                console.log(`[PARSE ALT] Found: "${title}" -> ${href}`);
+                
+                const match = href.match(/id=([^&]+)/);
+                if (match && title) {
+                    const downloadId = match[1];
+                    
+                    subtitles.push({
+                        id: downloadId,
+                        title: title,
+                        url: `${this.baseUrl}/${href}`,
+                        language: 'cs',
+                        matchScore: 0
+                    });
+                }
+            });
+        }
 
         console.log(`[TITULKY] ✅ Found ${subtitles.length} subtitles`);
         return subtitles;
