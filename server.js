@@ -631,10 +631,24 @@ app.get('/:config?/subtitles/:type/:id.json', async (req, res) => {
         console.log(`[VIDEO INFO] Special Edition: ${videoInfo.specialEdition || 'none'}`);
 
         // Search for subtitles
-        const searchQuery = `${movieInfo.title} ${movieInfo.year}`;
-        console.log(`\n[SEARCH] Query: "${searchQuery}"`);
+        let searchQuery = movieInfo.title; // Try without year first
+        console.log(`\n[SEARCH] Query (without year): "${searchQuery}"`);
         
         let subtitles = await titulkyClient.searchSubtitles(searchQuery);
+
+        // If no results, try with year
+        if (subtitles.length === 0) {
+            searchQuery = `${movieInfo.title} ${movieInfo.year}`;
+            console.log(`[SEARCH] No results, trying with year: "${searchQuery}"`);
+            subtitles = await titulkyClient.searchSubtitles(searchQuery);
+        }
+        
+        // If still no results, try just the year
+        if (subtitles.length === 0 && movieInfo.year) {
+            searchQuery = movieInfo.year;
+            console.log(`[SEARCH] Still no results, trying just year: "${searchQuery}"`);
+            subtitles = await titulkyClient.searchSubtitles(searchQuery);
+        }
 
         if (subtitles.length === 0) {
             console.log(`[SEARCH] ⚠️  No subtitles found`);
