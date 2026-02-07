@@ -66,32 +66,47 @@ class RealDebridClient {
             console.log('[RD] 📡 Fetching current streaming info...');
             console.log(`[RD] 🔑 Using API key: ${this.apiKey.substring(0, 12)}...`);
             
-            const response = await axios.get(`${this.baseUrl}/streaming/active`, {
+            // Real-Debrid doesn't have a "currently streaming" endpoint
+            // We'll try to get active torrents instead
+            const response = await axios.get(`${this.baseUrl}/torrents`, {
                 headers: {
                     'Authorization': `Bearer ${this.apiKey}`
                 },
-                timeout: 5000
+                timeout: 5000,
+                params: {
+                    limit: 10,
+                    offset: 0
+                }
             });
 
             console.log(`[RD] ✅ API Response status: ${response.status}`);
-            console.log(`[RD] 📊 Active streams count: ${response.data?.length || 0}`);
+            console.log(`[RD] 📊 Total torrents: ${response.data?.length || 0}`);
 
             if (response.data && response.data.length > 0) {
-                const activeStream = response.data[0];
-                console.log(`[RD] 🎬 Active stream found: ${activeStream.filename}`);
-                console.log(`[RD] 📦 Size: ${(activeStream.filesize / 1024 / 1024 / 1024).toFixed(2)} GB`);
-                return {
-                    filename: activeStream.filename,
-                    link: activeStream.link,
-                    size: activeStream.filesize,
-                    quality: this.extractQualityFromFilename(activeStream.filename)
-                };
+                // Find most recent torrent (sorted by date by default)
+                const recentTorrent = response.data[0];
+                
+                console.log(`[RD] 🎬 Most recent torrent: ${recentTorrent.filename}`);
+                console.log(`[RD] 📊 Status: ${recentTorrent.status}`);
+                console.log(`[RD] 📦 Size: ${(recentTorrent.bytes / 1024 / 1024 / 1024).toFixed(2)} GB`);
+                
+                // Only use if it's downloaded or downloading
+                if (recentTorrent.status === 'downloaded' || recentTorrent.status === 'downloading') {
+                    return {
+                        filename: recentTorrent.filename,
+                        link: recentTorrent.links?.[0] || null,
+                        size: recentTorrent.bytes,
+                        quality: this.extractQualityFromFilename(recentTorrent.filename)
+                    };
+                } else {
+                    console.log(`[RD] ⚠️  Torrent status is "${recentTorrent.status}", not using for matching`);
+                }
             }
 
-            console.log('[RD] ℹ️  No active streams found');
+            console.log('[RD] ℹ️  No suitable torrents found for matching');
             return null;
         } catch (error) {
-            console.error('[RD] ❌ Error fetching stream info:', error.message);
+            console.error('[RD] ❌ Error fetching torrent info:', error.message);
             if (error.response) {
                 console.error(`[RD] ❌ Response status: ${error.response.status}`);
                 console.error(`[RD] ❌ Response data:`, error.response.data);
