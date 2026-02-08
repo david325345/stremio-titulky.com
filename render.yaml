@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: stremio-titulky-addon
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: BASE_URL
+        sync: false
+      - key: OMDB_API_KEY
+        value: 46f67a03
+    healthCheckPath: /
