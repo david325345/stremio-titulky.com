@@ -3,6 +3,8 @@ const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const session = require('express-session');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 7000;
@@ -17,12 +19,43 @@ app.use(session({
   cookie: { maxAge: 30 * 24 * 60 * 60 * 1000 } // 30 days
 }));
 
-// In-memory storage for credentials (in production, use database)
-let globalCredentials = {
-  titulkyUsername: process.env.TITULKY_USERNAME || null,
-  titulkyPassword: process.env.TITULKY_PASSWORD || null,
-  omdbApiKey: process.env.OMDB_API_KEY || null
-};
+// Credentials file path
+const CREDENTIALS_FILE = path.join(__dirname, 'credentials.json');
+
+// Load credentials from file or environment variables
+function loadCredentials() {
+  try {
+    if (fs.existsSync(CREDENTIALS_FILE)) {
+      const data = fs.readFileSync(CREDENTIALS_FILE, 'utf8');
+      const creds = JSON.parse(data);
+      console.log('✅ Credentials loaded from file');
+      return creds;
+    }
+  } catch (error) {
+    console.error('Error loading credentials file:', error.message);
+  }
+  
+  // Fallback to environment variables
+  return {
+    titulkyUsername: process.env.TITULKY_USERNAME || null,
+    titulkyPassword: process.env.TITULKY_PASSWORD || null,
+    omdbApiKey: process.env.OMDB_API_KEY || null
+  };
+}
+
+// Save credentials to file
+function saveCredentials(creds) {
+  try {
+    fs.writeFileSync(CREDENTIALS_FILE, JSON.stringify(creds, null, 2), 'utf8');
+    console.log('✅ Credentials saved to file');
+    return true;
+  } catch (error) {
+    console.error('Error saving credentials:', error.message);
+    return false;
+  }
+}
+
+let globalCredentials = loadCredentials();
 
 // Session management for titulky.com
 let cookies = [];
@@ -45,53 +78,71 @@ function updateCookies(setCookieHeaders) {
 }
 
 async function login(username, password) {
-  try {
-    console.log('🔐 Logging in to premium.titulky.com...');
-    const baseUrl = 'https://premium.titulky.com';
-    
-    const homeResponse = await axios.get(baseUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-    });
-    updateCookies(homeResponse.headers['set-cookie']);
-    
-    const formData = new URLSearchParams({
-      'LoginName': username,
-      'LoginPassword': password,
-      'PermanentLog': '148'
-    });
-    
-    const loginResponse = await axios.post(baseUrl + '/', formData.toString(), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Cookie': getCookieHeader(),
-        'Referer': `${baseUrl}/`,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      maxRedirects: 5
-    });
-    
-    updateCookies(loginResponse.headers['set-cookie']);
-    
-    const verifyResponse = await axios.get(baseUrl + '/', {
-      headers: {
-        'Cookie': getCookieHeader(),
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+  const MAX_RETRIES = 3;
+  let lastError = null;
+  
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      console.log(`🔐 Logging in to premium.titulky.com (attempt ${attempt}/${MAX_RETRIES})...`);
+      const baseUrl = 'https://premium.titulky.com';
+      
+      const homeResponse = await axios.get(baseUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        timeout: 15000
+      });
+      updateCookies(homeResponse.headers['set-cookie']);
+      
+      const formData = new URLSearchParams({
+        'LoginName': username,
+        'LoginPassword': password,
+        'PermanentLog': '148'
+      });
+      
+      const loginResponse = await axios.post(baseUrl + '/', formData.toString(), {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Cookie': getCookieHeader(),
+          'Referer': `${baseUrl}/`,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        maxRedirects: 5,
+        timeout: 15000
+      });
+      
+      updateCookies(loginResponse.headers['set-cookie']);
+      
+      const verifyResponse = await axios.get(baseUrl + '/', {
+        headers: {
+          'Cookie': getCookieHeader(),
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        timeout: 15000
+      });
+      
+      const htmlContent = verifyResponse.data;
+      const success = htmlContent.includes('Odhlásit') || htmlContent.includes(username);
+      
+      if (success) {
+        console.log('✅ Login successful!');
+        isLoggedIn = true;
+        return true;
+      } else {
+        console.log(`❌ Login attempt ${attempt} failed - wrong credentials`);
+        return false; // Don't retry if credentials are wrong
       }
-    });
-    
-    const htmlContent = verifyResponse.data;
-    const success = htmlContent.includes('Odhlásit') || htmlContent.includes(username);
-    
-    if (success) {
-      console.log('✅ Login successful!');
-      isLoggedIn = true;
-      return true;
+    } catch (error) {
+      lastError = error;
+      console.error(`Login attempt ${attempt} error:`, error.message);
+      
+      if (attempt < MAX_RETRIES) {
+        console.log(`⏳ Waiting 2 seconds before retry...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
     }
-    return false;
-  } catch (error) {
-    console.error('Login error:', error.message);
-    return false;
   }
+  
+  console.error(`❌ Login failed after ${MAX_RETRIES} attempts:`, lastError?.message);
+  return false;
 }
 
 async function getIMDBTitle(imdbId, season = null, episode = null) {
@@ -487,7 +538,23 @@ app.post('/save-config', async (req, res) => {
     `);
   }
   
+  // Save to global variable
   globalCredentials = { titulkyUsername, titulkyPassword, omdbApiKey };
+  
+  // Save to file for persistence
+  const saved = saveCredentials(globalCredentials);
+  
+  if (!saved) {
+    return res.send(`
+      <!DOCTYPE html>
+      <html><head><meta charset="UTF-8"><title>Chyba</title></head>
+      <body style="font-family: sans-serif; padding: 40px; text-align: center;">
+        <h1>❌ Chyba</h1>
+        <p>Nepodařilo se uložit nastavení!</p>
+        <a href="/" style="color: #667eea;">← Zkusit znovu</a>
+      </body></html>
+    `);
+  }
   
   // Try to login
   const loginSuccess = await login(titulkyUsername, titulkyPassword);
@@ -501,6 +568,7 @@ app.post('/save-config', async (req, res) => {
       <body style="font-family: sans-serif; padding: 40px; text-align: center;">
         <h1>❌ Chyba přihlášení</h1>
         <p>Nepodařilo se přihlásit k titulky.com. Zkontrolujte username a heslo.</p>
+        <p style="color: #666; font-size: 14px;">Nastavení bylo uloženo, zkuste restartovat addon.</p>
         <a href="/" style="color: #667eea;">← Zkusit znovu</a>
       </body></html>
     `);
@@ -511,6 +579,17 @@ app.post('/configure', (req, res) => {
   globalCredentials = { titulkyUsername: null, titulkyPassword: null, omdbApiKey: null };
   isLoggedIn = false;
   cookies = [];
+  
+  // Delete credentials file
+  try {
+    if (fs.existsSync(CREDENTIALS_FILE)) {
+      fs.unlinkSync(CREDENTIALS_FILE);
+      console.log('✅ Credentials file deleted');
+    }
+  } catch (error) {
+    console.error('Error deleting credentials file:', error.message);
+  }
+  
   res.redirect('/');
 });
 
@@ -524,12 +603,33 @@ app.get('/subtitles/:type/:id.json', async (req, res) => {
   res.json(result);
 });
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    configured: !!(globalCredentials.titulkyUsername && globalCredentials.titulkyPassword && globalCredentials.omdbApiKey),
+    loggedIn: isLoggedIn,
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Auto-login on startup if credentials exist
 if (globalCredentials.titulkyUsername && globalCredentials.titulkyPassword) {
+  console.log('🔄 Auto-login enabled, attempting login...');
   login(globalCredentials.titulkyUsername, globalCredentials.titulkyPassword).catch(err => {
     console.error('Auto-login failed:', err.message);
   });
 }
+
+// Re-login every 6 hours to maintain session
+setInterval(() => {
+  if (globalCredentials.titulkyUsername && globalCredentials.titulkyPassword) {
+    console.log('🔄 Periodic re-login...');
+    login(globalCredentials.titulkyUsername, globalCredentials.titulkyPassword).catch(err => {
+      console.error('Periodic re-login failed:', err.message);
+    });
+  }
+}, 6 * 60 * 60 * 1000); // 6 hours
 
 app.listen(PORT, () => {
   console.log(`
@@ -538,6 +638,6 @@ app.listen(PORT, () => {
 📍 Web interface: http://localhost:${PORT}
 📍 Addon manifest: http://localhost:${PORT}/manifest.json
 
-${globalCredentials.titulkyUsername ? '✅ Nakonfigurováno' : '⚠️  Otevřete web interface pro konfiguraci'}
+${globalCredentials.titulkyUsername ? '✅ Nakonfigurováno - probíhá přihlášení...' : '⚠️  Otevřete web interface pro konfiguraci'}
   `);
 });
