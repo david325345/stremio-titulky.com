@@ -78,7 +78,7 @@ function updateCookies(setCookieHeaders) {
 }
 
 async function login(username, password) {
-  const MAX_RETRIES = 3;
+  const MAX_RETRIES = 2;
   let lastError = null;
   
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -91,93 +91,127 @@ async function login(username, password) {
       // Clear old cookies
       cookies = [];
       
-      // Step 1: Get homepage to obtain initial cookies
-      console.log('   Step 1: Getting homepage for cookies...');
+      // Step 1: Get homepage to obtain initial cookies and session
+      console.log('   Step 1: Getting homepage...');
       const homeResponse = await axios.get(baseUrl + '/', {
         headers: { 
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'cs,en;q=0.9',
+          'Connection': 'keep-alive'
         },
-        timeout: 15000,
+        timeout: 20000,
         maxRedirects: 5
       });
       
       updateCookies(homeResponse.headers['set-cookie']);
-      console.log(`   Received ${cookies.length} cookies from homepage`);
+      console.log(`   Received ${cookies.length} cookies`);
+      console.log(`   Cookies: ${cookies.join('; ')}`);
       
-      // Step 2: POST login form
-      console.log('   Step 2: Posting login form...');
+      // Wait a bit
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Step 2: POST login - EXACTLY as in Dart version
+      console.log('   Step 2: Posting login...');
+      
+      // Simple form data - exactly as Dart
       const formData = new URLSearchParams();
       formData.append('LoginName', username);
       formData.append('LoginPassword', password);
       formData.append('PermanentLog', '148');
       
-      const loginResponse = await axios.post(baseUrl + '/', formData.toString(), {
+      console.log(`   Sending: LoginName=${username}, LoginPassword=***, PermanentLog=148`);
+      
+      const loginResponse = await axios({
+        method: 'POST',
+        url: baseUrl + '/',
+        data: formData.toString(),
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           'Cookie': getCookieHeader(),
           'Referer': baseUrl + '/',
-          'Origin': baseUrl,
           'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
         },
         maxRedirects: 5,
-        timeout: 15000,
-        validateStatus: (status) => status < 500
+        timeout: 20000,
+        validateStatus: (status) => status >= 200 && status < 500
       });
       
-      console.log(`   Login response status: ${loginResponse.status}`);
+      console.log(`   Login POST status: ${loginResponse.status}`);
       updateCookies(loginResponse.headers['set-cookie']);
-      console.log(`   Total cookies after login: ${cookies.length}`);
+      console.log(`   Total cookies: ${cookies.length}`);
+      console.log(`   All cookies: ${cookies.join('; ')}`);
       
-      // Check for specific cookies that indicate login
-      const hasLogonLogin = cookies.some(c => c.startsWith('LogonLogin='));
-      const hasSessTitulky = cookies.some(c => c.startsWith('SESSTITULKY='));
+      // Check the LOGIN RESPONSE HTML
+      const loginHtml = loginResponse.data.toString();
+      console.log(`   Login response length: ${loginHtml.length} chars`);
+      console.log(`   === LOGIN POST RESPONSE (first 1000 chars) ===`);
+      console.log(loginHtml.substring(0, 1000));
+      console.log(`   === END LOGIN POST RESPONSE ===`);
       
-      console.log(`   Has LogonLogin cookie: ${hasLogonLogin}`);
-      console.log(`   Has SESSTITULKY cookie: ${hasSessTitulky}`);
+      // Check if login response already shows we're logged in
+      const loginResponseHasOdhlasit = loginHtml.toLowerCase().includes('odhlásit') || loginHtml.toLowerCase().includes('odhlas');
+      const loginResponseHasLoginForm = loginHtml.includes('LoginName') || loginHtml.includes('LoginPassword');
       
-      // Step 3: Verify login by checking homepage again
-      console.log('   Step 3: Verifying login...');
+      console.log(`   Login response has "odhlásit": ${loginResponseHasOdhlasit}`);
+      console.log(`   Login response has login form: ${loginResponseHasLoginForm}`);
+      
+      // Wait a bit
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Step 3: Verify by getting homepage again
+      console.log('   Step 3: Verifying...');
       const verifyResponse = await axios.get(baseUrl + '/', {
         headers: {
           'Cookie': getCookieHeader(),
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
         },
-        timeout: 15000
+        timeout: 20000
       });
       
       const htmlContent = verifyResponse.data.toString();
       
-      // DEBUG: Save part of HTML to see what we got
-      const htmlSample = htmlContent.substring(0, 2000);
-      console.log(`   HTML sample (first 500 chars):`);
-      console.log(`   ${htmlSample.substring(0, 500)}`);
+      // Save HTML sample for debugging
+      const htmlStart = htmlContent.substring(0, 1000);
+      console.log(`   === HTML START (first 1000 chars) ===`);
+      console.log(htmlStart);
+      console.log(`   === HTML END ===`);
       
-      // Check multiple indicators of successful login
-      const hasOdhlasit = htmlContent.includes('Odhlásit') || htmlContent.includes('odhlásit');
+      // Check cookies
+      const hasLogonLogin = cookies.some(c => c.startsWith('LogonLogin='));
+      const hasSessTitulky = cookies.some(c => c.startsWith('SESSTITULKY='));
+      const hasPhpSessId = cookies.some(c => c.startsWith('PHPSESSID='));
+      
+      console.log(`   Has LogonLogin: ${hasLogonLogin}`);
+      console.log(`   Has SESSTITULKY: ${hasSessTitulky}`);
+      console.log(`   Has PHPSESSID: ${hasPhpSessId}`);
+      
+      // Check page content
+      const hasOdhlasit = htmlContent.toLowerCase().includes('odhlásit') || htmlContent.toLowerCase().includes('odhlas');
+      const hasLoginForm = htmlContent.includes('LoginName') || htmlContent.includes('LoginPassword');
       const hasUsername = htmlContent.includes(username);
-      const noLoginForm = !htmlContent.includes('LoginName') && !htmlContent.includes('LoginPassword');
       
-      console.log(`   Page contains "Odhlásit": ${hasOdhlasit}`);
-      console.log(`   Page contains username: ${hasUsername}`);
-      console.log(`   No login form: ${noLoginForm}`);
+      console.log(`   Page has "odhlásit": ${hasOdhlasit}`);
+      console.log(`   Page has login form: ${hasLoginForm}`);
+      console.log(`   Page has username: ${hasUsername}`);
       
-      const success = (hasLogonLogin || hasSessTitulky) && (hasOdhlasit || hasUsername || noLoginForm);
+      // Success if we have logout button OR no login form
+      const success = hasOdhlasit || !hasLoginForm;
       
       if (success) {
         console.log('✅ Login successful!');
         isLoggedIn = true;
         return true;
       } else {
-        console.log(`❌ Login attempt ${attempt} failed - verification failed`);
-        console.log(`   Check your username and password at https://premium.titulky.com`);
-        
-        // If we have cookies but verification failed, it might be wrong credentials
-        if (hasLogonLogin || hasSessTitulky) {
-          console.log('   Cookies received but login verification failed - likely wrong credentials');
-          return false; // Don't retry if we got cookies but still failed
-        }
+        console.log(`❌ Login failed - page still shows login form`);
         
         if (attempt === MAX_RETRIES) {
+          console.log(`   ERROR: Could not login after ${MAX_RETRIES} attempts`);
+          console.log(`   Please check:`);
+          console.log(`   1. Username/password are correct at https://premium.titulky.com`);
+          console.log(`   2. Account is active (not banned/expired)`);
+          console.log(`   3. Try logging in manually in browser first`);
           return false;
         }
       }
@@ -187,7 +221,6 @@ async function login(username, password) {
       
       if (error.response) {
         console.error(`   Response status: ${error.response.status}`);
-        console.error(`   Response headers:`, error.response.headers);
       }
       
       if (attempt < MAX_RETRIES) {
