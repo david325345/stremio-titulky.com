@@ -84,64 +84,118 @@ async function login(username, password) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       console.log(`🔐 Logging in to premium.titulky.com (attempt ${attempt}/${MAX_RETRIES})...`);
+      console.log(`   Username: ${username}`);
+      
       const baseUrl = 'https://premium.titulky.com';
       
-      const homeResponse = await axios.get(baseUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-        timeout: 15000
-      });
-      updateCookies(homeResponse.headers['set-cookie']);
+      // Clear old cookies
+      cookies = [];
       
-      const formData = new URLSearchParams({
-        'LoginName': username,
-        'LoginPassword': password,
-        'PermanentLog': '148'
+      // Step 1: Get homepage to obtain initial cookies
+      console.log('   Step 1: Getting homepage for cookies...');
+      const homeResponse = await axios.get(baseUrl + '/', {
+        headers: { 
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        },
+        timeout: 15000,
+        maxRedirects: 5
       });
+      
+      updateCookies(homeResponse.headers['set-cookie']);
+      console.log(`   Received ${cookies.length} cookies from homepage`);
+      
+      // Step 2: POST login form
+      console.log('   Step 2: Posting login form...');
+      const formData = new URLSearchParams();
+      formData.append('LoginName', username);
+      formData.append('LoginPassword', password);
+      formData.append('PermanentLog', '148');
       
       const loginResponse = await axios.post(baseUrl + '/', formData.toString(), {
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           'Cookie': getCookieHeader(),
-          'Referer': `${baseUrl}/`,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          'Referer': baseUrl + '/',
+          'Origin': baseUrl,
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
         },
         maxRedirects: 5,
-        timeout: 15000
+        timeout: 15000,
+        validateStatus: (status) => status < 500
       });
       
+      console.log(`   Login response status: ${loginResponse.status}`);
       updateCookies(loginResponse.headers['set-cookie']);
+      console.log(`   Total cookies after login: ${cookies.length}`);
       
+      // Check for specific cookies that indicate login
+      const hasLogonLogin = cookies.some(c => c.startsWith('LogonLogin='));
+      const hasSessTitulky = cookies.some(c => c.startsWith('SESSTITULKY='));
+      
+      console.log(`   Has LogonLogin cookie: ${hasLogonLogin}`);
+      console.log(`   Has SESSTITULKY cookie: ${hasSessTitulky}`);
+      
+      // Step 3: Verify login by checking homepage again
+      console.log('   Step 3: Verifying login...');
       const verifyResponse = await axios.get(baseUrl + '/', {
         headers: {
           'Cookie': getCookieHeader(),
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
         },
         timeout: 15000
       });
       
-      const htmlContent = verifyResponse.data;
-      const success = htmlContent.includes('Odhlásit') || htmlContent.includes(username);
+      const htmlContent = verifyResponse.data.toString();
+      
+      // Check multiple indicators of successful login
+      const hasOdhlasit = htmlContent.includes('Odhlásit') || htmlContent.includes('odhlásit');
+      const hasUsername = htmlContent.includes(username);
+      const noLoginForm = !htmlContent.includes('LoginName') && !htmlContent.includes('LoginPassword');
+      
+      console.log(`   Page contains "Odhlásit": ${hasOdhlasit}`);
+      console.log(`   Page contains username: ${hasUsername}`);
+      console.log(`   No login form: ${noLoginForm}`);
+      
+      const success = (hasLogonLogin || hasSessTitulky) && (hasOdhlasit || hasUsername || noLoginForm);
       
       if (success) {
         console.log('✅ Login successful!');
         isLoggedIn = true;
         return true;
       } else {
-        console.log(`❌ Login attempt ${attempt} failed - wrong credentials`);
-        return false; // Don't retry if credentials are wrong
+        console.log(`❌ Login attempt ${attempt} failed - verification failed`);
+        console.log(`   Check your username and password at https://premium.titulky.com`);
+        
+        // If we have cookies but verification failed, it might be wrong credentials
+        if (hasLogonLogin || hasSessTitulky) {
+          console.log('   Cookies received but login verification failed - likely wrong credentials');
+          return false; // Don't retry if we got cookies but still failed
+        }
+        
+        if (attempt === MAX_RETRIES) {
+          return false;
+        }
       }
     } catch (error) {
       lastError = error;
-      console.error(`Login attempt ${attempt} error:`, error.message);
+      console.error(`   Login attempt ${attempt} error:`, error.message);
+      
+      if (error.response) {
+        console.error(`   Response status: ${error.response.status}`);
+        console.error(`   Response headers:`, error.response.headers);
+      }
       
       if (attempt < MAX_RETRIES) {
-        console.log(`⏳ Waiting 2 seconds before retry...`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log(`   ⏳ Waiting 3 seconds before retry...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
       }
     }
   }
   
-  console.error(`❌ Login failed after ${MAX_RETRIES} attempts:`, lastError?.message);
+  console.error(`❌ Login failed after ${MAX_RETRIES} attempts`);
+  if (lastError) {
+    console.error(`   Last error: ${lastError.message}`);
+  }
   return false;
 }
 
