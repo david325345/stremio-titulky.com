@@ -92,6 +92,42 @@ async function login(username, password) {
     console.log(`Cookies received: ${cookies.length}`);
     cookies.forEach((c, i) => console.log(`  [${i+1}] ${c}`));
     
+    // INSPECT THE LOGIN FORM IN HTML
+    const homeHtml = homeResponse.data.toString();
+    console.log('\n[INSPECTING] Looking for login form fields...');
+    
+    // Extract form fields using regex
+    const inputMatches = homeHtml.matchAll(/<input[^>]*name=["']([^"']+)["'][^>]*>/gi);
+    const formFields = [];
+    for (const match of inputMatches) {
+      const fullInput = match[0];
+      const fieldName = match[1];
+      const typeMatch = fullInput.match(/type=["']([^"']+)["']/i);
+      const valueMatch = fullInput.match(/value=["']([^"']+)["']/i);
+      const type = typeMatch ? typeMatch[1] : 'text';
+      const value = valueMatch ? valueMatch[1] : '';
+      
+      // Only show relevant fields
+      if (fieldName.toLowerCase().includes('login') || 
+          fieldName.toLowerCase().includes('password') || 
+          fieldName.toLowerCase().includes('user') ||
+          fieldName.toLowerCase().includes('name') ||
+          type === 'hidden') {
+        formFields.push({ name: fieldName, type, value });
+      }
+    }
+    
+    console.log('Found login-related form fields:');
+    formFields.forEach((field, i) => {
+      console.log(`  [${i+1}] name="${field.name}" type="${field.type}" value="${field.value || '(empty)'}"`);
+    });
+    
+    // Also look for form action
+    const formActionMatch = homeHtml.match(/<form[^>]*action=["']([^"']+)["']/i);
+    const formAction = formActionMatch ? formActionMatch[1] : 'NOT FOUND';
+    console.log(`Form action: ${formAction}`);
+    console.log('');
+    
     // Step 2: POST login
     console.log('\n[STEP 2] Posting login form...');
     const formData = new URLSearchParams();
