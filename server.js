@@ -147,6 +147,11 @@ async function login(username, password) {
       
       const htmlContent = verifyResponse.data.toString();
       
+      // DEBUG: Save part of HTML to see what we got
+      const htmlSample = htmlContent.substring(0, 2000);
+      console.log(`   HTML sample (first 500 chars):`);
+      console.log(`   ${htmlSample.substring(0, 500)}`);
+      
       // Check multiple indicators of successful login
       const hasOdhlasit = htmlContent.includes('Odhlásit') || htmlContent.includes('odhlásit');
       const hasUsername = htmlContent.includes(username);
@@ -533,8 +538,11 @@ app.get('/', (req, res) => {
             
             <form method="POST" action="/save-config">
                 <div class="form-group">
-                    <label>Titulky.com email/username:</label>
-                    <input type="text" name="titulkyUsername" required placeholder="vas.email@example.com">
+                    <label>Titulky.com přihlašovací jméno:</label>
+                    <input type="text" name="titulkyUsername" required placeholder="email@example.com NEBO username">
+                    <div class="help-text">
+                        ⚠️ Použijte EMAIL (ne username), pokud se přihlašujete přes email
+                    </div>
                 </div>
                 
                 <div class="form-group">
