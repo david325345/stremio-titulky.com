@@ -124,12 +124,12 @@ async function r2SaveHistory(username, history) {
 async function r2AddToHistory(username, item) {
   if (!s3) return;
   let history = await r2GetHistory(username);
-  // Remove duplicate
-  history = history.filter(h => h.imdbId !== item.imdbId);
+  // Remove duplicate (by full id including episode)
+  history = history.filter(h => h.id !== item.id);
   // Add to front
   history.unshift(item);
-  // Keep only 5
-  history = history.slice(0, 5);
+  // Keep only 10
+  history = history.slice(0, 10);
   await r2SaveHistory(username, history);
 }
 
@@ -1298,9 +1298,9 @@ function getDashboardPage(host, config, history, configStr) {
       <div class="history-item" data-imdb="${h.imdbId}" data-id="${h.id}" data-type="${h.type}" data-name="${h.name.replace(/"/g, '&quot;')}">
         <img class="poster" src="${h.poster || 'https://via.placeholder.com/80x120/1c2030/8891a8?text=?'}" alt="${h.name}">
         <div class="history-info">
-          <div class="history-title">${h.name}</div>
-          <div class="history-meta">${h.type === 'series' ? 'Seriál' : 'Film'} · ${h.imdbId}${h.id !== h.imdbId ? ' · ' + h.id.replace(/:/g, ' S').replace(/(\d+)\s*S/, 'S$1E') : ''}</div>
-          <button class="btn btn-upload" onclick="showUpload('${h.id.replace(/:/g, '-')}', '${h.name.replace(/'/g, "\\'")}', '${h.type}')">
+          <div class="history-title">${h.name}${h.type === 'series' && h.id.includes(':') ? (() => { const p = h.id.split(':'); return ' S' + String(p[1]||1).padStart(2,'0') + 'E' + String(p[2]||1).padStart(2,'0'); })() : ''}</div>
+          <div class="history-meta">${h.type === 'series' ? 'Seriál' : 'Film'} · ${h.imdbId}</div>
+          <button class="btn btn-upload" onclick="showUpload('${h.id.replace(/:/g, '-')}', '${h.name.replace(/'/g, "\\'")}${h.type === 'series' && h.id.includes(':') ? (() => { const p = h.id.split(':'); return ' S' + String(p[1]||1).padStart(2,'0') + 'E' + String(p[2]||1).padStart(2,'0'); })() : ''}', '${h.type}')">
             📤 Nahrát titulky
           </button>
         </div>
