@@ -2,7 +2,7 @@ const express = require('express');
 const TitulkyClient = require('./lib/titulkyClient');
 const axios = require('axios');
 const iconv = require('iconv-lite');
-const { S3Client, GetObjectCommand, PutObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
+const { S3Client, GetObjectCommand, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -849,6 +849,42 @@ app.post('/:config/upload', express.json({ limit: '2mb' }), async (req, res) => 
   res.json({ success: ok });
 });
 
+// ── List custom subtitles for an IMDB ID ─────────────────────────
+
+app.get('/:config/custom-list/:imdbId', async (req, res) => {
+  const config = decodeConfig(req.params.config);
+  if (!config || !config.username) return res.status(401).json({ error: 'Not logged in' });
+
+  const subs = await r2GetCustomSubs(req.params.imdbId);
+  res.json({ subs });
+});
+
+// ── Delete custom subtitle ───────────────────────────────────────
+
+app.post('/:config/custom-delete', express.json(), async (req, res) => {
+  const config = decodeConfig(req.params.config);
+  if (!config || !config.username) return res.status(401).json({ error: 'Not logged in' });
+
+  const { key } = req.body;
+  if (!key || !key.startsWith('custom/')) {
+    return res.status(400).json({ error: 'Invalid key' });
+  }
+
+  if (!s3) return res.status(500).json({ error: 'R2 not configured' });
+
+  try {
+    await s3.send(new DeleteObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: key,
+    }));
+    console.log(`[R2] Deleted custom sub: ${key}`);
+    res.json({ success: true });
+  } catch (e) {
+    console.log(`[R2] Delete error: ${e.message}`);
+    res.json({ success: false, error: e.message });
+  }
+});
+
 // ── Login test endpoint ───────────────────────────────────────────
 
 app.post('/verify', express.json(), async (req, res) => {
@@ -1324,6 +1360,21 @@ function getDashboardPage(host, config, history, configStr) {
     font-size: 20px; cursor: pointer; padding: 0 4px;
   }
   .close-btn:hover { color: var(--text); }
+  .loading-text { color: var(--text-dim); font-size: 14px; }
+  .existing-sub {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 8px; margin-bottom: 8px;
+  }
+  .existing-sub-info { flex: 1; min-width: 0; }
+  .existing-sub-name { display: block; font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .existing-sub-meta { display: block; font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+  .btn-delete {
+    background: none; border: 1px solid var(--border); border-radius: 8px;
+    color: var(--danger); cursor: pointer; padding: 6px 10px; font-size: 14px;
+    flex-shrink: 0; margin-left: 10px; transition: all 0.2s;
+  }
+  .btn-delete:hover { background: rgba(255,92,92,0.1); border-color: var(--danger); }
 </style>
 </head>
 <body>
@@ -1338,7 +1389,14 @@ function getDashboardPage(host, config, history, configStr) {
 <div class="upload-modal" id="uploadModal">
   <div class="upload-card">
     <button class="close-btn" onclick="hideUpload()">✕</button>
-    <h2 id="uploadTitle">Nahrát titulky</h2>
+    <h2 id="uploadTitle">Titulky</h2>
+
+    <div id="existingSubs">
+      <p class="loading-text">Načítám…</p>
+    </div>
+
+    <hr style="border: none; border-top: 1px solid var(--border); margin: 20px 0;">
+    <h3 style="font-size: 15px; margin-bottom: 12px;">Nahrát nové titulky</h3>
 
     <label for="subFile">Soubor titulků (.srt, .ssa, .ass, .sub, .vtt)</label>
     <input type="file" id="subFile" accept=".srt,.ssa,.ass,.sub,.vtt">
@@ -1362,13 +1420,72 @@ function getDashboardPage(host, config, history, configStr) {
 const CONFIG_STR = '${configStr}';
 let currentImdbId = '';
 
-function showUpload(id, name, type) {
+async function showUpload(id, name, type) {
   currentImdbId = id;
-  document.getElementById('uploadTitle').textContent = 'Nahrát titulky – ' + name;
+  document.getElementById('uploadTitle').textContent = name;
   document.getElementById('uploadStatus').textContent = '';
   document.getElementById('subFile').value = '';
   document.getElementById('subLabel').value = '';
+  document.getElementById('existingSubs').innerHTML = '<p class="loading-text">Načítám…</p>';
   document.getElementById('uploadModal').classList.add('show');
+
+  // Load existing custom subs
+  try {
+    const res = await fetch('/' + CONFIG_STR + '/custom-list/' + id);
+    const data = await res.json();
+    renderExistingSubs(data.subs || []);
+  } catch {
+    document.getElementById('existingSubs').innerHTML = '<p class="subtitle">Nepodařilo se načíst titulky</p>';
+  }
+}
+
+function renderExistingSubs(subs) {
+  const el = document.getElementById('existingSubs');
+  if (subs.length === 0) {
+    el.innerHTML = '<p class="subtitle">Žádné nahrané titulky</p>';
+    return;
+  }
+  el.innerHTML = '<p style="font-size:13px; color:var(--text-dim); margin-bottom:8px;">Nahrané titulky:</p>' +
+    subs.map(s => \`
+      <div class="existing-sub" id="sub-\${btoa(s.key).replace(/[^a-zA-Z0-9]/g,'')}">
+        <div class="existing-sub-info">
+          <span class="existing-sub-name">\${s.label}</span>
+          <span class="existing-sub-meta">\${s.filename} · \${s.lang === 'cze' ? 'CZ' : s.lang === 'slk' ? 'SK' : s.lang.toUpperCase()}</span>
+        </div>
+        <button class="btn-delete" onclick="deleteSub('\${s.key.replace(/'/g, "\\\\'")}', this)" title="Smazat">🗑</button>
+      </div>
+    \`).join('');
+}
+
+async function deleteSub(key, btnEl) {
+  if (!confirm('Opravdu smazat tyto titulky?')) return;
+  btnEl.disabled = true;
+  btnEl.textContent = '…';
+
+  try {
+    const res = await fetch('/' + CONFIG_STR + '/custom-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      btnEl.closest('.existing-sub').remove();
+      // Check if any left
+      const container = document.getElementById('existingSubs');
+      if (!container.querySelector('.existing-sub')) {
+        container.innerHTML = '<p class="subtitle">Žádné nahrané titulky</p>';
+      }
+    } else {
+      alert('Chyba: ' + (data.error || 'neznámá'));
+      btnEl.disabled = false;
+      btnEl.textContent = '🗑';
+    }
+  } catch (e) {
+    alert('Chyba: ' + e.message);
+    btnEl.disabled = false;
+    btnEl.textContent = '🗑';
+  }
 }
 
 function hideUpload() {
@@ -1392,7 +1509,7 @@ async function doUpload() {
   }
 
   const file = fileInput.files[0];
-  if (!/\.(srt|ssa|ass|sub|vtt)$/i.test(file.name)) {
+  if (!/\\.(srt|ssa|ass|sub|vtt)$/i.test(file.name)) {
     status.className = 'status error';
     status.textContent = 'Podporované formáty: .srt, .ssa, .ass, .sub, .vtt';
     return;
@@ -1412,7 +1529,7 @@ async function doUpload() {
         imdbId: currentImdbId,
         content: base64,
         filename: file.name,
-        label: label || file.name.replace(/\.(srt|ssa|ass|sub|vtt)$/i, ''),
+        label: label || file.name.replace(/\\.(srt|ssa|ass|sub|vtt)$/i, ''),
         lang: lang,
       }),
     });
@@ -1421,7 +1538,12 @@ async function doUpload() {
     if (data.success) {
       status.className = 'status ok';
       status.textContent = '✓ Titulky nahrány!';
-      setTimeout(hideUpload, 1500);
+      fileInput.value = '';
+      document.getElementById('subLabel').value = '';
+      // Reload the list
+      const listRes = await fetch('/' + CONFIG_STR + '/custom-list/' + currentImdbId);
+      const listData = await listRes.json();
+      renderExistingSubs(listData.subs || []);
     } else {
       status.className = 'status error';
       status.textContent = 'Chyba: ' + (data.error || 'neznámá');
