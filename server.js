@@ -424,8 +424,8 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     // Check if filename is usable (not empty, not just whitespace, has release info)
     const isUsableFilename = playingFilename.trim().length > 3 && extractReleaseTags(playingFilename).length > 0;
 
-    // Omni mode: if no usable filename and RD token available, get from Real-Debrid
-    if (!isUsableFilename && config.omni && config.rdToken) {
+    // If no usable filename and RD token available, try Real-Debrid automatically
+    if (!isUsableFilename && config.rdToken) {
       try {
         console.log(`[RD] No usable filename from Stremio (got: "${playingFilename}"), checking Real-Debrid…`);
         const rdRes = await axios.get('https://api.real-debrid.com/rest/1.0/downloads?limit=1', {
@@ -442,7 +442,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
             playingFilename = item.filename || '';
             console.log(`[RD] Got filename: "${playingFilename}" (${ageMin}min ago)`);
           } else {
-            console.log(`[RD] Last download too old (${ageMin}min ago): "${item.filename}" → using quality sort`);
+            console.log(`[RD] Last download too old (${ageMin}min ago): "${item.filename}" → using IMDB title + quality sort`);
           }
         }
       } catch (e) {
@@ -451,9 +451,8 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     }
 
     const playingTags = extractReleaseTags(playingFilename);
-    const omniActive = !isUsableFilename && config.omni;
 
-    console.log(`[Addon] Playing: "${playingFilename}" | Tags: ${playingTags.join(', ') || 'none'}${omniActive ? ' (Omni' + (config.rdToken ? '+RD' : '') + ')' : ''}`);
+    console.log(`[Addon] Playing: "${playingFilename}" | Tags: ${playingTags.join(', ') || 'none'}${!isUsableFilename ? (config.rdToken ? ' (RD fallback)' : ' (no filename)') : ''}`);
 
     // Filter results by title match
     const movieName = name.toLowerCase().replace(/[.!?]+$/, '').trim();
