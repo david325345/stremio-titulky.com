@@ -85,9 +85,16 @@ app.get('/configure', (req, res) => {
   res.type('html').send(getConfigurePage(host));
 });
 
+// Stremio requests /:config/configure after reading manifest
+app.get('/:config/configure', (req, res) => {
+  const host = `${req.protocol}://${req.get('host')}`;
+  res.type('html').send(getConfigurePage(host));
+});
+
 // ── Manifest ──────────────────────────────────────────────────────
 
 function getManifest(config, host) {
+  const configStr = encodeConfig(config);
   return {
     id: 'community.titulky.com',
     version: '1.0.0',
@@ -479,7 +486,10 @@ function getConfigurePage(host) {
   <div class="result" id="result">
     <hr class="divider">
     <a class="btn btn-install" id="installLink" href="#">
-      📦 Nainstalovat do Stremio
+      📦 Nainstalovat do Stremio (desktop app)
+    </a>
+    <a class="btn btn-install" id="webInstallLink" href="#" target="_blank" style="background: var(--accent); margin-top: 8px;">
+      🌐 Nainstalovat přes Stremio Web
     </a>
     <button class="btn btn-copy" onclick="copyUrl()">
       📋 Kopírovat URL addonu
@@ -529,11 +539,13 @@ async function verify() {
       status.textContent = '✓ Přihlášení úspěšné';
 
       const config = btoa(JSON.stringify({ username, password }))
-        .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+        .replace(/[+]/g, '-').replace(/[/]/g, '_').replace(/=+$/, '');
       const manifestUrl = window.location.origin + '/' + config + '/manifest.json';
-      const stremioUrl = 'stremio://' + manifestUrl.replace(/^https?:\\/\\//, '');
+      const stremioUrl = 'stremio://' + manifestUrl.replace(/^https?:[/][/]/, '');
+      const webInstallUrl = 'https://web.stremio.com/#/addons?addon=' + encodeURIComponent(manifestUrl);
 
       document.getElementById('installLink').href = stremioUrl;
+      document.getElementById('webInstallLink').href = webInstallUrl;
       document.getElementById('addonUrl').textContent = manifestUrl;
       result.classList.add('show');
     } else {
