@@ -631,7 +631,13 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
     const files = await client.downloadSubtitle(subId, decoded);
 
     if (!files || files.length === 0) {
-      return res.status(404).send('Subtitle not found or captcha required');
+      console.log(`[Addon] Download failed for ${subId} - captcha or limit reached`);
+      const limitSrt = `1
+00:00:01,000 --> 00:00:30,000
+Překročili jste denní limit stažení titulků z Titulky.com. Stáhněte titulky které jsou v cachi (označené ✅) nebo počkejte na reset limitu do dalšího dne.
+`;
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      return res.send(limitSrt);
     }
 
     const file = files[0];
