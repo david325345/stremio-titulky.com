@@ -1,6 +1,7 @@
 const express = require('express');
 const TitulkyClient = require('./lib/titulkyClient');
 const axios = require('axios');
+const iconv = require('iconv-lite');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -333,6 +334,51 @@ function qualityScore(text) {
   return best;
 }
 
+// ── Encoding detection & conversion ──────────────────────────────
+
+function ensureUtf8(buffer) {
+  if (!Buffer.isBuffer(buffer)) buffer = Buffer.from(buffer);
+
+  // Check for UTF-8 BOM
+  if (buffer[0] === 0xEF && buffer[1] === 0xBB && buffer[2] === 0xBF) {
+    return buffer.toString('utf-8');
+  }
+
+  // Check for UTF-16 LE BOM
+  if (buffer[0] === 0xFF && buffer[1] === 0xFE) {
+    return iconv.decode(buffer, 'utf-16le');
+  }
+
+  // Try to decode as UTF-8 and check if it's valid
+  const utf8Str = buffer.toString('utf-8');
+  if (isValidUtf8(utf8Str)) {
+    return utf8Str;
+  }
+
+  // Not valid UTF-8 → assume Windows-1250 (Czech/Slovak standard)
+  console.log('[Addon] Converting subtitle from CP1250 to UTF-8');
+  return iconv.decode(buffer, 'win1250');
+}
+
+function isValidUtf8(str) {
+  // If decoding as UTF-8 produces replacement characters (�) for common
+  // Czech/Slovak byte sequences, it's likely CP1250
+  // Check for typical CP1250 patterns that become garbled in UTF-8
+  const replacements = (str.match(/\uFFFD/g) || []).length;
+  if (replacements > 0) return false;
+
+  // Check for suspicious sequences: CP1250 Czech chars (0xE8=č, 0xF8=ř, 0xE9=é, 0xED=í, etc.)
+  // decoded as UTF-8 produce sequences like Ã¨, Ã¸, Ã©, Ã­
+  // These are multi-byte UTF-8 sequences that don't make sense for Czech text
+  const suspicious = (str.match(/[\xC0-\xC3][\x80-\xBF]/g) || []).length;
+  const totalChars = str.length;
+
+  // If more than 5% of chars are suspicious multi-byte sequences, likely CP1250
+  if (totalChars > 50 && suspicious / totalChars > 0.02) return false;
+
+  return true;
+}
+
 // ── Subtitle download proxy ───────────────────────────────────────
 
 app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
@@ -366,15 +412,19 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
     }
 
     const file = files[0];
+
+    // Convert encoding to UTF-8 if needed
+    const utf8Content = ensureUtf8(file.content);
+
     subtitleCache.set(cacheKey, {
-      content: file.content,
+      content: utf8Content,
       filename: file.filename,
       time: Date.now(),
     });
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
-    res.send(file.content);
+    res.send(utf8Content);
   } catch (e) {
     console.error('[Addon] Download error:', e.message);
     res.status(500).send('Download failed');
