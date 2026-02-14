@@ -11,6 +11,8 @@ const PORT = process.env.PORT || 3000;
 const r2Enabled = !!(process.env.R2_ENDPOINT && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY && process.env.R2_BUCKET);
 
 let s3 = null;
+const r2CachedIds = new Set(); // in-memory index of cached subtitle IDs
+
 if (r2Enabled) {
   s3 = new S3Client({
     region: 'auto',
@@ -21,6 +23,30 @@ if (r2Enabled) {
     },
   });
   console.log(`[R2] Cache enabled (bucket: ${process.env.R2_BUCKET})`);
+
+  // Load cache index on startup (async, non-blocking)
+  (async () => {
+    try {
+      let continuationToken = undefined;
+      let total = 0;
+      do {
+        const res = await s3.send(new ListObjectsV2Command({
+          Bucket: process.env.R2_BUCKET,
+          Prefix: 'subs/',
+          ContinuationToken: continuationToken,
+        }));
+        for (const obj of (res.Contents || [])) {
+          const id = obj.Key.replace('subs/', '').replace('.srt', '');
+          if (id) r2CachedIds.add(id);
+          total++;
+        }
+        continuationToken = res.IsTruncated ? res.NextContinuationToken : undefined;
+      } while (continuationToken);
+      console.log(`[R2] Cache index loaded: ${total} subtitle(s)`);
+    } catch (e) {
+      console.log(`[R2] Cache index load error: ${e.message}`);
+    }
+  })();
 } else {
   console.log('[R2] Cache disabled (missing env variables)');
 }
@@ -57,6 +83,7 @@ async function r2Put(subId, content, filename) {
       ContentType: 'text/plain; charset=utf-8',
       Metadata: { filename },
     }));
+    r2CachedIds.add(String(subId));
     console.log(`[R2] Cached: ${subId}`);
   } catch (e) {
     console.log(`[R2] Put error: ${e.message}`);
@@ -421,10 +448,12 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     const configStr = req.params.config;
     const subtitles = scoredResults.slice(0, 10).map(({ sub, score }) => {
       const label = buildLabel(sub, score, hasReleaseTags);
+      const cached = r2CachedIds.has(String(sub.id));
+      const icon = cached ? '✅' : '⬇️';
       return {
         id: `titulky-${sub.id}`,
         url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-        lang: label || (sub.lang === 'cze' ? 'Čeština' : sub.lang === 'slk' ? 'Slovenčina' : sub.lang),
+        lang: `${icon} ${label || (sub.lang === 'cze' ? 'Čeština' : sub.lang === 'slk' ? 'Slovenčina' : sub.lang)}`,
         SubEncoding: 'UTF-8',
         SubFormat: 'srt',
       };
