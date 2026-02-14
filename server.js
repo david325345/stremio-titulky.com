@@ -2,9 +2,66 @@ const express = require('express');
 const TitulkyClient = require('./lib/titulkyClient');
 const axios = require('axios');
 const iconv = require('iconv-lite');
+const { S3Client, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ── R2 Cloud Cache ───────────────────────────────────────────────
+const r2Enabled = !!(process.env.R2_ENDPOINT && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY && process.env.R2_BUCKET);
+
+let s3 = null;
+if (r2Enabled) {
+  s3 = new S3Client({
+    region: 'auto',
+    endpoint: process.env.R2_ENDPOINT,
+    credentials: {
+      accessKeyId: process.env.R2_ACCESS_KEY_ID,
+      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    },
+  });
+  console.log(`[R2] Cache enabled (bucket: ${process.env.R2_BUCKET})`);
+} else {
+  console.log('[R2] Cache disabled (missing env variables)');
+}
+
+async function r2Get(subId) {
+  if (!s3) return null;
+  try {
+    const res = await s3.send(new GetObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: `subs/${subId}.srt`,
+    }));
+    const chunks = [];
+    for await (const chunk of res.Body) chunks.push(chunk);
+    const content = Buffer.concat(chunks).toString('utf-8');
+    const filename = res.Metadata?.filename || `${subId}.srt`;
+    console.log(`[R2] Cache HIT: ${subId}`);
+    return { content, filename };
+  } catch (e) {
+    if (e.name === 'NoSuchKey' || e.$metadata?.httpStatusCode === 404) {
+      return null; // not cached
+    }
+    console.log(`[R2] Get error: ${e.message}`);
+    return null;
+  }
+}
+
+async function r2Put(subId, content, filename) {
+  if (!s3) return;
+  try {
+    await s3.send(new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: `subs/${subId}.srt`,
+      Body: content,
+      ContentType: 'text/plain; charset=utf-8',
+      Metadata: { filename },
+    }));
+    console.log(`[R2] Cached: ${subId}`);
+  } catch (e) {
+    console.log(`[R2] Put error: ${e.message}`);
+  }
+}
 
 // ── Client cache (keyed by username) ──────────────────────────────
 const clientCache = new Map();
@@ -388,11 +445,11 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
   const { subId, linkFile } = req.params;
   const cacheKey = `${subId}-${linkFile}`;
 
-  // Check cache
+  // 1. Check in-memory cache
   if (subtitleCache.has(cacheKey)) {
     const cached = subtitleCache.get(cacheKey);
     if (Date.now() - cached.time < SUBTITLE_CACHE_TTL) {
-      console.log(`[Addon] Serving cached subtitle ${subId}`);
+      console.log(`[Addon] Serving memory-cached subtitle ${subId}`);
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="${cached.filename}"`);
       return res.send(cached.content);
@@ -400,6 +457,17 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
     subtitleCache.delete(cacheKey);
   }
 
+  // 2. Check R2 cloud cache
+  const r2Cached = await r2Get(subId);
+  if (r2Cached) {
+    // Store in memory cache too
+    subtitleCache.set(cacheKey, { ...r2Cached, time: Date.now() });
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${r2Cached.filename}"`);
+    return res.send(r2Cached.content);
+  }
+
+  // 3. Download from titulky.com
   try {
     const client = await getClient(config);
     if (!client) return res.status(500).send('Login failed');
@@ -416,11 +484,15 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
     // Convert encoding to UTF-8 if needed
     const utf8Content = ensureUtf8(file.content);
 
+    // Save to memory cache
     subtitleCache.set(cacheKey, {
       content: utf8Content,
       filename: file.filename,
       time: Date.now(),
     });
+
+    // Save to R2 cloud cache (async, don't wait)
+    r2Put(subId, utf8Content, file.filename);
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
