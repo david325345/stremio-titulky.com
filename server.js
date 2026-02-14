@@ -157,7 +157,8 @@ async function r2GetCustomSubs(imdbId) {
         const filename = obj.Key.split('/').pop();
         const label = getRes.Metadata?.label || filename.replace(/\.(srt|ssa|ass|sub|vtt)$/i, '');
         const lang = getRes.Metadata?.lang || 'cze';
-        subs.push({ key: obj.Key, filename, label, lang });
+        const uploader = getRes.Metadata?.uploader || 'unknown';
+        subs.push({ key: obj.Key, filename, label, lang, uploader });
       } catch { /* skip */ }
     }
     console.log(`[R2] Found ${subs.length} custom sub(s) for ${imdbId}`);
@@ -167,7 +168,7 @@ async function r2GetCustomSubs(imdbId) {
   }
 }
 
-async function r2PutCustomSub(imdbId, filename, content, label, lang) {
+async function r2PutCustomSub(imdbId, filename, content, label, lang, uploader) {
   if (!s3) return false;
   try {
     const key = `custom/${imdbId}/${filename}`;
@@ -178,9 +179,9 @@ async function r2PutCustomSub(imdbId, filename, content, label, lang) {
       Key: key,
       Body: content,
       ContentType: (mimeTypes[ext] || 'text/plain') + '; charset=utf-8',
-      Metadata: { label, lang },
+      Metadata: { label, lang, uploader: uploader || 'unknown' },
     }));
-    console.log(`[R2] Custom sub saved: ${key}`);
+    console.log(`[R2] Custom sub saved: ${key} (by ${uploader})`);
     return true;
   } catch (e) {
     console.log(`[R2] Custom sub error: ${e.message}`);
@@ -878,7 +879,8 @@ app.post('/:config/upload', express.json({ limit: '2mb' }), async (req, res) => 
     filename.replace(/[^a-zA-Z0-9._-]/g, '_'),
     subContent,
     label || filename.replace(/\.(srt|ssa|ass|sub|vtt)$/i, ''),
-    lang || 'cze'
+    lang || 'cze',
+    config.username
   );
 
   res.json({ success: ok });
@@ -894,6 +896,13 @@ app.get('/:config/custom-list/:imdbId', async (req, res) => {
   res.json({ subs });
 });
 
+// ── Admin users ──────────────────────────────────────────────────
+const ADMIN_USERS = new Set((process.env.ADMIN_USERS || 'David32').toLowerCase().split(',').map(u => u.trim()));
+
+function isAdmin(username) {
+  return ADMIN_USERS.has((username || '').toLowerCase());
+}
+
 // ── Delete custom subtitle ───────────────────────────────────────
 
 app.post('/:config/custom-delete', express.json(), async (req, res) => {
@@ -907,12 +916,33 @@ app.post('/:config/custom-delete', express.json(), async (req, res) => {
 
   if (!s3) return res.status(500).json({ error: 'R2 not configured' });
 
+  // Check permission: get uploader metadata
+  try {
+    const getRes = await s3.send(new GetObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: key,
+    }));
+    // Consume body to avoid leak
+    for await (const _ of getRes.Body) {}
+    const uploader = getRes.Metadata?.uploader || 'unknown';
+
+    if (!isAdmin(config.username) && uploader.toLowerCase() !== config.username.toLowerCase()) {
+      console.log(`[R2] Delete denied: ${config.username} tried to delete sub by ${uploader}`);
+      return res.status(403).json({ error: 'Nemáte oprávnění smazat tyto titulky' });
+    }
+  } catch (e) {
+    // If file doesn't exist, just return success
+    if (e.name === 'NoSuchKey' || e.$metadata?.httpStatusCode === 404) {
+      return res.json({ success: true });
+    }
+  }
+
   try {
     await s3.send(new DeleteObjectCommand({
       Bucket: process.env.R2_BUCKET,
       Key: key,
     }));
-    console.log(`[R2] Deleted custom sub: ${key}`);
+    console.log(`[R2] Deleted custom sub: ${key} (by ${config.username})`);
     res.json({ success: true });
   } catch (e) {
     console.log(`[R2] Delete error: ${e.message}`);
@@ -1453,6 +1483,8 @@ function getDashboardPage(host, config, history, configStr) {
 
 <script>
 const CONFIG_STR = '${configStr}';
+const CURRENT_USER = '${config.username.replace(/'/g, "\\'")}';
+const IS_ADMIN = ${isAdmin(config.username)};
 let currentImdbId = '';
 
 async function showUpload(id, name, type) {
@@ -1481,15 +1513,18 @@ function renderExistingSubs(subs) {
     return;
   }
   el.innerHTML = '<p style="font-size:13px; color:var(--text-dim); margin-bottom:8px;">Nahrané titulky:</p>' +
-    subs.map(s => \`
+    subs.map(s => {
+      const canDelete = IS_ADMIN || (s.uploader && s.uploader.toLowerCase() === CURRENT_USER.toLowerCase());
+      const uploaderText = s.uploader && s.uploader !== 'unknown' ? ' · nahrál ' + s.uploader : '';
+      return \`
       <div class="existing-sub" id="sub-\${btoa(s.key).replace(/[^a-zA-Z0-9]/g,'')}">
         <div class="existing-sub-info">
           <span class="existing-sub-name">\${s.label}</span>
-          <span class="existing-sub-meta">\${s.filename} · \${s.lang === 'cze' ? 'CZ' : s.lang === 'slk' ? 'SK' : s.lang.toUpperCase()}</span>
+          <span class="existing-sub-meta">\${s.filename} · \${s.lang === 'cze' ? 'CZ' : s.lang === 'slk' ? 'SK' : s.lang.toUpperCase()}\${uploaderText}</span>
         </div>
-        <button class="btn-delete" onclick="deleteSub('\${s.key.replace(/'/g, "\\\\'")}', this)" title="Smazat">🗑</button>
+        \${canDelete ? '<button class="btn-delete" onclick="deleteSub(\\'' + s.key.replace(/'/g, "\\\\\\\\'") + '\\', this)" title="Smazat">🗑</button>' : ''}
       </div>
-    \`).join('');
+    \`;}).join('');
 }
 
 async function deleteSub(key, btnEl) {
