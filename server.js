@@ -950,6 +950,125 @@ app.post('/:config/custom-delete', express.json(), async (req, res) => {
   }
 });
 
+// ── Admin: Download backup (ZIP of entire R2 bucket) ─────────────
+
+const AdmZip = require('adm-zip');
+
+app.get('/:config/admin/backup', async (req, res) => {
+  const config = decodeConfig(req.params.config);
+  if (!config || !isAdmin(config.username)) return res.status(403).send('Forbidden');
+  if (!s3) return res.status(500).send('R2 not configured');
+
+  console.log(`[Admin] Backup requested by ${config.username}`);
+
+  try {
+    const zip = new AdmZip();
+    let continuationToken = undefined;
+    let total = 0;
+
+    do {
+      const listRes = await s3.send(new ListObjectsV2Command({
+        Bucket: process.env.R2_BUCKET,
+        ContinuationToken: continuationToken,
+      }));
+
+      for (const obj of (listRes.Contents || [])) {
+        try {
+          const getRes = await s3.send(new GetObjectCommand({
+            Bucket: process.env.R2_BUCKET,
+            Key: obj.Key,
+          }));
+          const chunks = [];
+          for await (const chunk of getRes.Body) chunks.push(chunk);
+          const buf = Buffer.concat(chunks);
+
+          // Store metadata as JSON sidecar
+          if (getRes.Metadata && Object.keys(getRes.Metadata).length > 0) {
+            zip.addFile(obj.Key + '.meta.json', Buffer.from(JSON.stringify(getRes.Metadata)));
+          }
+          zip.addFile(obj.Key, buf);
+          total++;
+        } catch { /* skip failed files */ }
+      }
+
+      continuationToken = listRes.IsTruncated ? listRes.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    console.log(`[Admin] Backup created: ${total} file(s)`);
+
+    const zipBuffer = zip.toBuffer();
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="titulky-backup.zip"`);
+    res.send(zipBuffer);
+  } catch (e) {
+    console.error('[Admin] Backup error:', e.message);
+    res.status(500).send('Backup failed');
+  }
+});
+
+// ── Admin: Restore backup (upload ZIP) ───────────────────────────
+
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+app.post('/:config/admin/restore', upload.single('backup'), async (req, res) => {
+  const config = decodeConfig(req.params.config);
+  if (!config || !isAdmin(config.username)) return res.status(403).json({ error: 'Forbidden' });
+  if (!s3) return res.status(500).json({ error: 'R2 not configured' });
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  console.log(`[Admin] Restore requested by ${config.username} (${(req.file.size / 1024 / 1024).toFixed(1)} MB)`);
+
+  try {
+    const zip = new AdmZip(req.file.buffer);
+    const entries = zip.getEntries();
+    let count = 0;
+
+    for (const entry of entries) {
+      if (entry.isDirectory || entry.entryName.endsWith('.meta.json')) continue;
+
+      const key = entry.entryName;
+      const content = entry.getData();
+
+      // Look for metadata sidecar
+      const metaEntry = zip.getEntry(key + '.meta.json');
+      let metadata = {};
+      if (metaEntry) {
+        try { metadata = JSON.parse(metaEntry.getData().toString('utf-8')); } catch {}
+      }
+
+      // Detect content type
+      const ext = key.split('.').pop().toLowerCase();
+      let contentType = 'application/octet-stream';
+      if (ext === 'json') contentType = 'application/json';
+      else if (['srt', 'ssa', 'ass', 'sub', 'txt'].includes(ext)) contentType = 'text/plain; charset=utf-8';
+      else if (ext === 'vtt') contentType = 'text/vtt; charset=utf-8';
+
+      await s3.send(new PutObjectCommand({
+        Bucket: process.env.R2_BUCKET,
+        Key: key,
+        Body: content,
+        ContentType: contentType,
+        Metadata: metadata,
+      }));
+
+      // Update cache index if it's a subtitle
+      if (key.startsWith('subs/')) {
+        const id = key.replace('subs/', '').replace('.srt', '');
+        if (id) r2CachedIds.add(id);
+      }
+
+      count++;
+    }
+
+    console.log(`[Admin] Restored ${count} file(s)`);
+    res.json({ success: true, count });
+  } catch (e) {
+    console.error('[Admin] Restore error:', e.message);
+    res.json({ success: false, error: e.message });
+  }
+});
+
 // ── Login test endpoint ───────────────────────────────────────────
 
 app.post('/verify', express.json(), async (req, res) => {
@@ -1449,6 +1568,20 @@ function getDashboardPage(host, config, history, configStr) {
   <p class="subtitle">Nahraj vlastní titulky k filmům a seriálům, které jsi přehrával.</p>
 
   ${historyHtml}
+
+  ${isAdmin(config.username) ? `
+  <hr style="border: none; border-top: 1px solid var(--border); margin: 32px 0;">
+  <h2 style="font-size: 18px; margin-bottom: 8px;">🔧 Admin</h2>
+  <p class="subtitle">Záloha a obnova dat z Cloudflare R2.</p>
+  <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;">
+    <button class="btn btn-upload" onclick="downloadBackup()" id="backupBtn">💾 Stáhnout zálohu</button>
+    <label class="btn btn-upload" style="cursor:pointer;">
+      📂 Nahrát zálohu
+      <input type="file" accept=".zip" style="display:none;" onchange="uploadBackup(this)">
+    </label>
+  </div>
+  <div class="status" id="adminStatus"></div>
+  ` : ''}
 </div>
 
 <div class="upload-modal" id="uploadModal">
@@ -1628,6 +1761,66 @@ async function doUpload() {
     status.className = 'status error';
     status.textContent = 'Chyba: ' + e.message;
   }
+}
+
+async function downloadBackup() {
+  if (!IS_ADMIN) return;
+  const btn = document.getElementById('backupBtn');
+  const status = document.getElementById('adminStatus');
+  btn.disabled = true;
+  btn.textContent = '⏳ Vytvářím zálohu…';
+  status.className = 'status';
+  status.textContent = 'Stahování zálohy může trvat…';
+
+  try {
+    const res = await fetch('/' + CONFIG_STR + '/admin/backup');
+    if (!res.ok) throw new Error('Server error ' + res.status);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'titulky-backup-' + new Date().toISOString().slice(0,10) + '.zip';
+    a.click();
+    URL.revokeObjectURL(url);
+    status.className = 'status ok';
+    status.textContent = '✓ Záloha stažena';
+  } catch (e) {
+    status.className = 'status error';
+    status.textContent = 'Chyba: ' + e.message;
+  }
+  btn.disabled = false;
+  btn.textContent = '💾 Stáhnout zálohu';
+}
+
+async function uploadBackup(input) {
+  if (!IS_ADMIN || !input.files.length) return;
+  const file = input.files[0];
+  if (!file.name.endsWith('.zip')) { alert('Vyber ZIP soubor'); return; }
+
+  const status = document.getElementById('adminStatus');
+  status.className = 'status';
+  status.textContent = 'Nahrávám zálohu… (' + (file.size / 1024 / 1024).toFixed(1) + ' MB)';
+
+  try {
+    const formData = new FormData();
+    formData.append('backup', file);
+    const res = await fetch('/' + CONFIG_STR + '/admin/restore', {
+      method: 'POST',
+      body: formData,
+    });
+    const data = await res.json();
+    if (data.success) {
+      status.className = 'status ok';
+      status.textContent = '✓ Obnoveno ' + data.count + ' soubor(ů)';
+    } else {
+      status.className = 'status error';
+      status.textContent = 'Chyba: ' + (data.error || 'neznámá');
+    }
+  } catch (e) {
+    status.className = 'status error';
+    status.textContent = 'Chyba: ' + e.message;
+  }
+  input.value = '';
 }
 </script>
 </body>
