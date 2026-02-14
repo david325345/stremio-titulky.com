@@ -421,17 +421,29 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     const filenameMatch = extraStr.match(/filename=([^&]+)/);
     let playingFilename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : '';
 
-    // Omni mode: if no filename and RD token available, get from Real-Debrid
-    if (!playingFilename && config.omni && config.rdToken) {
+    // Check if filename is usable (not empty, not just whitespace, has release info)
+    const isUsableFilename = playingFilename.trim().length > 3 && extractReleaseTags(playingFilename).length > 0;
+
+    // Omni mode: if no usable filename and RD token available, get from Real-Debrid
+    if (!isUsableFilename && config.omni && config.rdToken) {
       try {
-        console.log(`[RD] No filename from Stremio, checking Real-Debrid…`);
+        console.log(`[RD] No usable filename from Stremio (got: "${playingFilename}"), checking Real-Debrid…`);
         const rdRes = await axios.get('https://api.real-debrid.com/rest/1.0/downloads?limit=1', {
           headers: { 'Authorization': `Bearer ${config.rdToken}` },
           timeout: 5000,
         });
         if (rdRes.data && rdRes.data.length > 0) {
-          playingFilename = rdRes.data[0].filename || '';
-          console.log(`[RD] Got filename: "${playingFilename}"`);
+          const item = rdRes.data[0];
+          const generated = new Date(item.generated).getTime();
+          const ageMs = Date.now() - generated;
+          const ageMin = (ageMs / 60000).toFixed(1);
+
+          if (ageMs < 3 * 60 * 1000) {
+            playingFilename = item.filename || '';
+            console.log(`[RD] Got filename: "${playingFilename}" (${ageMin}min ago)`);
+          } else {
+            console.log(`[RD] Last download too old (${ageMin}min ago): "${item.filename}" → using quality sort`);
+          }
         }
       } catch (e) {
         console.log(`[RD] API error: ${e.message}`);
@@ -439,8 +451,9 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     }
 
     const playingTags = extractReleaseTags(playingFilename);
+    const omniActive = !isUsableFilename && config.omni;
 
-    console.log(`[Addon] Playing: "${playingFilename}" | Tags: ${playingTags.join(', ')}${!filenameMatch && config.omni ? ' (Omni' + (config.rdToken ? '+RD' : '') + ')' : ''}`);
+    console.log(`[Addon] Playing: "${playingFilename}" | Tags: ${playingTags.join(', ') || 'none'}${omniActive ? ' (Omni' + (config.rdToken ? '+RD' : '') + ')' : ''}`);
 
     // Filter results by title match
     const movieName = name.toLowerCase().replace(/[.!?]+$/, '').trim();
@@ -1879,21 +1892,36 @@ app.listen(PORT, () => {
   console.log(`Titulky.com Stremio addon running on port ${PORT}`);
   console.log(`Configure at: http://localhost:${PORT}/configure`);
 
-  // ── Self-ping: keep alive until midnight, then sleep ────────────
+  // ── Self-ping: keep alive until midnight UTC, then sleep ────────
   const PING_INTERVAL = 10 * 60 * 1000; // 10 minutes
   let pingTimer = null;
+  let pingCount = 0;
+
+  function msUntilMidnightUTC() {
+    const now = new Date();
+    const midnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
+    return midnight.getTime() - now.getTime();
+  }
+
+  function formatMs(ms) {
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    return `${h}h ${m}m`;
+  }
 
   function startPing() {
     if (pingTimer) return;
     const host = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
-    console.log(`[Ping] Keep-alive started → ${host}`);
+    const sleepIn = formatMs(msUntilMidnightUTC());
+    pingCount = 0;
+    console.log(`[Ping] ▶ Keep-alive started → ${host} (sleep in ${sleepIn})`);
 
     pingTimer = setInterval(async () => {
       const now = new Date();
-      const hours = now.getUTCHours(); // UTC midnight
+      const hours = now.getUTCHours();
 
       if (hours === 0) {
-        console.log(`[Ping] Midnight – stopping keep-alive, going to sleep`);
+        console.log(`[Ping] 🌙 Midnight UTC – stopping after ${pingCount} ping(s), going to sleep`);
         clearInterval(pingTimer);
         pingTimer = null;
         return;
@@ -1901,9 +1929,11 @@ app.listen(PORT, () => {
 
       try {
         await axios.get(`${host}/`, { timeout: 10000 });
-        console.log(`[Ping] OK (${now.toISOString().slice(11, 19)} UTC)`);
+        pingCount++;
+        const sleepIn = formatMs(msUntilMidnightUTC());
+        console.log(`[Ping] ✓ #${pingCount} OK (${now.toISOString().slice(11, 16)} UTC) – sleep in ${sleepIn}`);
       } catch (e) {
-        console.log(`[Ping] Failed: ${e.message}`);
+        console.log(`[Ping] ✗ Failed: ${e.message}`);
       }
     }, PING_INTERVAL);
   }
@@ -1913,7 +1943,10 @@ app.listen(PORT, () => {
 
   // If server wakes up after midnight sleep, restart pinging on first request
   app.use((req, res, next) => {
-    if (!pingTimer) startPing();
+    if (!pingTimer) {
+      console.log(`[Ping] ☀ Server woke up from sleep`);
+      startPing();
+    }
     next();
   });
 });
