@@ -477,14 +477,23 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
 
     // Build response — max 10
     const configStr = req.params.config;
+    const isOmni = !!config.omni;
     const subtitles = scoredResults.slice(0, 10).map(({ sub, score }) => {
-      const label = buildLabel(sub, score, hasReleaseTags);
       const cached = r2CachedIds.has(String(sub.id));
-      const icon = cached ? '✅' : '⬇️';
+
+      let langLabel;
+      if (isOmni) {
+        langLabel = buildOmniLabel(sub, cached);
+      } else {
+        const label = buildLabel(sub, score, hasReleaseTags);
+        const icon = cached ? '✅' : '⬇️';
+        langLabel = `${icon} ${label || (sub.lang === 'cze' ? 'Čeština' : sub.lang === 'slk' ? 'Slovenčina' : sub.lang)}`;
+      }
+
       return {
         id: `titulky-${sub.id}`,
         url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-        lang: `${icon} ${label || (sub.lang === 'cze' ? 'Čeština' : sub.lang === 'slk' ? 'Slovenčina' : sub.lang)}`,
+        lang: langLabel,
         SubEncoding: 'UTF-8',
         SubFormat: 'srt',
       };
@@ -501,7 +510,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       subtitles.unshift({
         id: `custom-${cs.key}`,
         url: `${host}/custom-sub/${customImdbId}/${encodeURIComponent(cs.filename)}`,
-        lang: `📌 ${cs.label}`,
+        lang: isOmni ? `📌 ${cs.lang === 'slk' ? 'SK' : 'CZ'}` : `📌 ${cs.label}`,
         SubEncoding: 'UTF-8',
         SubFormat: subFormat,
       });
@@ -539,6 +548,32 @@ function buildLabel(sub, score, hasReleaseTags) {
   let label = sub.version || sub.title || '';
   if (hasReleaseTags && score > 0) label = `⭐ ${label}`;
   return label;
+}
+
+function buildOmniLabel(sub, cached) {
+  const icon = cached ? '✅' : '⬇️';
+  const version = sub.version || sub.title || '';
+  const langPrefix = sub.lang === 'slk' ? 'SK' : 'CZ';
+
+  // Extract key quality info from version name
+  const tags = [];
+  const v = version.toLowerCase();
+
+  // Resolution
+  if (v.includes('2160p') || v.includes('4k')) tags.push('4K');
+  else if (v.includes('1080p')) tags.push('1080p');
+  else if (v.includes('720p')) tags.push('720p');
+
+  // Source
+  if (v.includes('remux')) tags.push('Remux');
+  else if (v.includes('bluray') || v.includes('blu-ray')) tags.push('BluRay');
+  else if (v.includes('web-dl') || v.includes('webdl')) tags.push('WEB-DL');
+  else if (v.includes('webrip')) tags.push('WebRip');
+  else if (v.includes('hdtv')) tags.push('HDTV');
+  else if (v.includes('dvdrip')) tags.push('DVDRip');
+
+  const tagStr = tags.length > 0 ? ' ' + tags.join(' ') : '';
+  return `${icon} ${langPrefix}${tagStr}`;
 }
 
 // Quality ranking when no release tags from playing file
@@ -1353,7 +1388,7 @@ function getConfigurePage(host) {
   <div class="omni-section" style="margin-top: 20px;">
     <label class="toggle-row" style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 0;">
       <input type="checkbox" id="omniToggle" onchange="toggleOmni()" style="width: auto; accent-color: var(--accent); transform: scale(1.2);">
-      <span style="font-size: 14px; color: var(--text);">Omni mód <span style="color: var(--text-dim); font-size: 12px;">(pro Stremio bez názvů souborů)</span></span>
+      <span style="font-size: 14px; color: var(--text);">Optimalizace pro Omni na ATV</span>
     </label>
     <div id="rdSection" style="display: none; margin-top: 12px; padding: 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);">
       <label for="rdToken" style="margin-top: 0;">Real-Debrid API klíč</label>
