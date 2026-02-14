@@ -58,8 +58,16 @@ async function getMeta(type, id) {
   }
 }
 
-// ── CORS headers for Stremio ──────────────────────────────────────
+// ── Trust proxy (Render runs behind a reverse proxy) ──────────────
+app.set('trust proxy', 1);
 
+// ── Request logging ───────────────────────────────────────────────
+app.use((req, res, next) => {
+  console.log(`[REQ] ${req.method} ${req.path} (proto: ${req.protocol}, x-forwarded-proto: ${req.get('x-forwarded-proto')})`);
+  next();
+});
+
+// ── CORS headers for Stremio ──────────────────────────────────────
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', '*');
@@ -213,13 +221,23 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
 // ── Login test endpoint ───────────────────────────────────────────
 
 app.post('/verify', express.json(), async (req, res) => {
+  console.log('[Verify] Request body:', JSON.stringify(req.body));
   const { username, password } = req.body || {};
-  if (!username || !password) return res.json({ success: false });
+  if (!username || !password) {
+    console.log('[Verify] Missing credentials');
+    return res.json({ success: false, error: 'missing_credentials' });
+  }
 
-  const client = new TitulkyClient(username, password);
-  const ok = await client.login();
-  if (ok) clientCache.set(username, client);
-  res.json({ success: ok });
+  try {
+    const client = new TitulkyClient(username, password);
+    const ok = await client.login();
+    console.log('[Verify] Login result:', ok);
+    if (ok) clientCache.set(username, client);
+    res.json({ success: ok });
+  } catch (e) {
+    console.error('[Verify] Error:', e.message);
+    res.json({ success: false, error: e.message });
+  }
 });
 
 // ── Configure page HTML ───────────────────────────────────────────
@@ -499,7 +517,7 @@ async function verify() {
   result.classList.remove('show');
 
   try {
-    const res = await fetch(HOST + '/verify', {
+    const res = await fetch('/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
@@ -512,7 +530,7 @@ async function verify() {
 
       const config = btoa(JSON.stringify({ username, password }))
         .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
-      const manifestUrl = HOST + '/' + config + '/manifest.json';
+      const manifestUrl = window.location.origin + '/' + config + '/manifest.json';
       const stremioUrl = 'stremio://' + manifestUrl.replace(/^https?:\\/\\//, '');
 
       document.getElementById('installLink').href = stremioUrl;
