@@ -1878,4 +1878,42 @@ async function uploadBackup(input) {
 app.listen(PORT, () => {
   console.log(`Titulky.com Stremio addon running on port ${PORT}`);
   console.log(`Configure at: http://localhost:${PORT}/configure`);
+
+  // ── Self-ping: keep alive until midnight, then sleep ────────────
+  const PING_INTERVAL = 10 * 60 * 1000; // 10 minutes
+  let pingTimer = null;
+
+  function startPing() {
+    if (pingTimer) return;
+    const host = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+    console.log(`[Ping] Keep-alive started → ${host}`);
+
+    pingTimer = setInterval(async () => {
+      const now = new Date();
+      const hours = now.getUTCHours(); // UTC midnight
+
+      if (hours === 0) {
+        console.log(`[Ping] Midnight – stopping keep-alive, going to sleep`);
+        clearInterval(pingTimer);
+        pingTimer = null;
+        return;
+      }
+
+      try {
+        await axios.get(`${host}/`, { timeout: 10000 });
+        console.log(`[Ping] OK (${now.toISOString().slice(11, 19)} UTC)`);
+      } catch (e) {
+        console.log(`[Ping] Failed: ${e.message}`);
+      }
+    }, PING_INTERVAL);
+  }
+
+  // Start pinging immediately on boot
+  startPing();
+
+  // If server wakes up after midnight sleep, restart pinging on first request
+  app.use((req, res, next) => {
+    if (!pingTimer) startPing();
+    next();
+  });
 });
