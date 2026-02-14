@@ -432,13 +432,14 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
 
     // Add custom subtitles from R2 (user-uploaded)
     const imdbIdClean = id.split(':')[0];
-    const customSubs = await r2GetCustomSubs(type === 'series' ? id.replace(/:/g, '-') : imdbIdClean);
+    const customImdbId = type === 'series' ? id.replace(/:/g, '-') : imdbIdClean;
+    const customSubs = await r2GetCustomSubs(customImdbId);
     for (const cs of customSubs) {
       const ext = cs.filename.split('.').pop().toLowerCase();
       const formatMap = { srt: 'srt', ssa: 'ssa', ass: 'ass', sub: 'sub', vtt: 'vtt' };
       subtitles.unshift({
         id: `custom-${cs.key}`,
-        url: `${host}/custom-sub/${encodeURIComponent(cs.key)}`,
+        url: `${host}/custom-sub/${customImdbId}/${encodeURIComponent(cs.filename)}`,
         lang: `📌 ${cs.label}`,
         SubEncoding: 'UTF-8',
         SubFormat: formatMap[ext] || 'srt',
@@ -629,10 +630,11 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
 
 // ── Serve custom subtitle from R2 ─────────────────────────────────
 
-app.get('/custom-sub/:key(*)', async (req, res) => {
+app.get('/custom-sub/:imdbId/:filename', async (req, res) => {
   if (!s3) return res.status(404).send('R2 not configured');
   try {
-    const key = decodeURIComponent(req.params.key);
+    const { imdbId, filename } = req.params;
+    const key = `custom/${imdbId}/${filename}`;
     console.log(`[Custom] Serving: ${key}`);
     const getRes = await s3.send(new GetObjectCommand({
       Bucket: process.env.R2_BUCKET,
@@ -642,18 +644,8 @@ app.get('/custom-sub/:key(*)', async (req, res) => {
     for await (const chunk of getRes.Body) chunks.push(chunk);
     const buf = Buffer.concat(chunks);
 
-    // Detect format from key extension
-    const ext = key.split('.').pop().toLowerCase();
-    const contentTypes = {
-      srt: 'text/plain; charset=utf-8',
-      ass: 'text/x-ssa; charset=utf-8',
-      ssa: 'text/x-ssa; charset=utf-8',
-      sub: 'text/plain; charset=utf-8',
-      vtt: 'text/vtt; charset=utf-8',
-    };
-
-    res.setHeader('Content-Type', contentTypes[ext] || 'text/plain; charset=utf-8');
-    res.setHeader('Content-Disposition', `inline; filename="${key.split('/').pop()}"`);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
     res.send(buf);
   } catch (e) {
     console.error('[Custom] Serve error:', e.message);
@@ -1035,6 +1027,9 @@ async function verify() {
       document.getElementById('dashboardLink').href = '/' + config + '/dashboard';
       document.getElementById('addonUrl').textContent = manifestUrl;
       result.classList.add('show');
+
+      // Save config to localStorage for auto-login
+      try { localStorage.setItem('titulky_config', config); } catch {}
     } else {
       status.className = 'status error';
       status.textContent = '✗ Nesprávné přihlašovací údaje';
@@ -1061,6 +1056,20 @@ function copyUrl() {
 document.getElementById('password').addEventListener('keydown', e => {
   if (e.key === 'Enter') verify();
 });
+
+// Auto-login: if config saved in localStorage, restore session
+(function autoLogin() {
+  try {
+    const saved = localStorage.getItem('titulky_config');
+    if (!saved) return;
+    const parsed = JSON.parse(atob(saved.replace(/-/g, '+').replace(/_/g, '/')));
+    if (parsed.username && parsed.password) {
+      document.getElementById('username').value = parsed.username;
+      document.getElementById('password').value = parsed.password;
+      verify();
+    }
+  } catch {}
+})();
 </script>
 </body>
 </html>`;
