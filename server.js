@@ -2,7 +2,7 @@ const express = require('express');
 const TitulkyClient = require('./lib/titulkyClient');
 const axios = require('axios');
 const iconv = require('iconv-lite');
-const { S3Client, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, GetObjectCommand, PutObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -60,6 +60,104 @@ async function r2Put(subId, content, filename) {
     console.log(`[R2] Cached: ${subId}`);
   } catch (e) {
     console.log(`[R2] Put error: ${e.message}`);
+  }
+}
+
+// ── R2 History helpers ───────────────────────────────────────────
+
+async function r2GetHistory(username) {
+  if (!s3) return [];
+  try {
+    const res = await s3.send(new GetObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: `history/${username}.json`,
+    }));
+    const chunks = [];
+    for await (const chunk of res.Body) chunks.push(chunk);
+    return JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+  } catch {
+    return [];
+  }
+}
+
+async function r2SaveHistory(username, history) {
+  if (!s3) return;
+  try {
+    await s3.send(new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: `history/${username}.json`,
+      Body: JSON.stringify(history),
+      ContentType: 'application/json',
+    }));
+  } catch (e) {
+    console.log(`[R2] History save error: ${e.message}`);
+  }
+}
+
+async function r2AddToHistory(username, item) {
+  if (!s3) return;
+  let history = await r2GetHistory(username);
+  // Remove duplicate
+  history = history.filter(h => h.imdbId !== item.imdbId);
+  // Add to front
+  history.unshift(item);
+  // Keep only 5
+  history = history.slice(0, 5);
+  await r2SaveHistory(username, history);
+}
+
+// ── R2 Custom subtitle helpers ───────────────────────────────────
+
+async function r2GetCustomSubs(imdbId) {
+  if (!s3) return [];
+  try {
+    const res = await s3.send(new ListObjectsV2Command({
+      Bucket: process.env.R2_BUCKET,
+      Prefix: `custom/${imdbId}/`,
+    }));
+    if (!res.Contents || res.Contents.length === 0) return [];
+
+    const subs = [];
+    for (const obj of res.Contents) {
+      if (!/\.(srt|ssa|ass|sub|vtt)$/i.test(obj.Key)) continue;
+      try {
+        const getRes = await s3.send(new GetObjectCommand({
+          Bucket: process.env.R2_BUCKET,
+          Key: obj.Key,
+        }));
+        const chunks = [];
+        for await (const chunk of getRes.Body) chunks.push(chunk);
+        const filename = obj.Key.split('/').pop();
+        const label = getRes.Metadata?.label || filename.replace(/\.(srt|ssa|ass|sub|vtt)$/i, '');
+        const lang = getRes.Metadata?.lang || 'cze';
+        subs.push({ key: obj.Key, filename, label, lang });
+      } catch { /* skip */ }
+    }
+    console.log(`[R2] Found ${subs.length} custom sub(s) for ${imdbId}`);
+    return subs;
+  } catch {
+    return [];
+  }
+}
+
+async function r2PutCustomSub(imdbId, filename, content, label, lang) {
+  if (!s3) return false;
+  try {
+    const key = `custom/${imdbId}/${filename}`;
+    const ext = filename.split('.').pop().toLowerCase();
+    const mimeTypes = { srt: 'text/plain', ssa: 'text/plain', ass: 'text/plain', sub: 'text/plain', vtt: 'text/vtt' };
+    await s3.send(new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: key,
+      Body: content,
+      ContentType: (mimeTypes[ext] || 'text/plain') + '; charset=utf-8',
+      Metadata: { label, lang },
+    }));
+    console.log(`[R2] Custom sub saved: ${key}`);
+    return true;
+  } catch (e) {
+    console.log(`[R2] Custom sub error: ${e.message}`);
+    return false;
   }
 }
 
@@ -279,6 +377,17 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     console.log(`[Addon] Search titles: ${JSON.stringify(uniqueTitles)} (${type} ${id})`);
     const results = await client.search(uniqueTitles);
 
+    // Save to watch history (async, don't wait)
+    const imdbId = id.split(':')[0];
+    r2AddToHistory(config.username, {
+      imdbId,
+      type,
+      id,
+      name,
+      poster: meta.poster || null,
+      time: Date.now(),
+    });
+
     // Extract playing filename from Stremio extra params
     const extraStr = req.params.extra || '';
     const filenameMatch = extraStr.match(/filename=([^&]+)/);
@@ -320,6 +429,21 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         SubFormat: 'srt',
       };
     });
+
+    // Add custom subtitles from R2 (user-uploaded)
+    const imdbIdClean = id.split(':')[0];
+    const customSubs = await r2GetCustomSubs(type === 'series' ? id.replace(/:/g, '-') : imdbIdClean);
+    for (const cs of customSubs) {
+      const ext = cs.filename.split('.').pop().toLowerCase();
+      const formatMap = { srt: 'srt', ssa: 'ssa', ass: 'ass', sub: 'sub', vtt: 'vtt' };
+      subtitles.unshift({
+        id: `custom-${cs.key}`,
+        url: `${host}/custom-sub/${encodeURIComponent(cs.key)}`,
+        lang: `📌 ${cs.label}`,
+        SubEncoding: 'UTF-8',
+        SubFormat: formatMap[ext] || 'srt',
+      });
+    }
 
     res.json({ subtitles });
   } catch (e) {
@@ -501,6 +625,68 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
     console.error('[Addon] Download error:', e.message);
     res.status(500).send('Download failed');
   }
+});
+
+// ── Serve custom subtitle from R2 ─────────────────────────────────
+
+app.get('/custom-sub/:key(*)', async (req, res) => {
+  if (!s3) return res.status(404).send('R2 not configured');
+  try {
+    const key = decodeURIComponent(req.params.key);
+    const getRes = await s3.send(new GetObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: key,
+    }));
+    const chunks = [];
+    for await (const chunk of getRes.Body) chunks.push(chunk);
+    const content = Buffer.concat(chunks).toString('utf-8');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(content);
+  } catch (e) {
+    console.error('[Custom] Serve error:', e.message);
+    res.status(404).send('Not found');
+  }
+});
+
+// ── Dashboard page ───────────────────────────────────────────────
+
+app.get('/:config/dashboard', async (req, res) => {
+  const config = decodeConfig(req.params.config);
+  if (!config || !config.username) return res.status(401).send('Not logged in');
+  const host = `${req.protocol}://${req.get('host')}`;
+  const history = await r2GetHistory(config.username);
+  res.type('html').send(getDashboardPage(host, config, history, req.params.config));
+});
+
+// ── Upload custom subtitle ───────────────────────────────────────
+
+app.post('/:config/upload', express.json({ limit: '2mb' }), async (req, res) => {
+  const config = decodeConfig(req.params.config);
+  if (!config || !config.username) return res.status(401).json({ error: 'Not logged in' });
+
+  const { imdbId, content, filename, label, lang } = req.body;
+  if (!imdbId || !content || !filename) {
+    return res.status(400).json({ error: 'Missing fields' });
+  }
+
+  // Convert base64 content to string, ensure UTF-8
+  let srtContent;
+  try {
+    const buf = Buffer.from(content, 'base64');
+    srtContent = ensureUtf8(buf);
+  } catch {
+    return res.status(400).json({ error: 'Invalid file content' });
+  }
+
+  const ok = await r2PutCustomSub(
+    imdbId,
+    filename.replace(/[^a-zA-Z0-9._-]/g, '_'),
+    srtContent,
+    label || filename.replace(/\.(srt|ssa|ass|sub|vtt)$/i, ''),
+    lang || 'cze'
+  );
+
+  res.json({ success: ok });
 });
 
 // ── Login test endpoint ───────────────────────────────────────────
@@ -772,6 +958,9 @@ function getConfigurePage(host) {
     <button class="btn btn-copy" onclick="copyUrl()">
       📋 Kopírovat URL addonu
     </button>
+    <a class="btn btn-install" id="dashboardLink" href="#" style="background: var(--surface-2); border: 1px solid var(--border); color: var(--accent); margin-top: 8px;">
+      📺 Dashboard – nahrát vlastní titulky
+    </a>
     <div style="margin-top: 16px;">
       <label>URL addonu</label>
       <div class="url-box" id="addonUrl"></div>
@@ -824,6 +1013,7 @@ async function verify() {
 
       document.getElementById('installLink').href = stremioUrl;
       document.getElementById('webInstallLink').href = webInstallUrl;
+      document.getElementById('dashboardLink').href = '/' + config + '/dashboard';
       document.getElementById('addonUrl').textContent = manifestUrl;
       result.classList.add('show');
     } else {
@@ -858,6 +1048,216 @@ document.getElementById('password').addEventListener('keydown', e => {
 }
 
 // ── Start ─────────────────────────────────────────────────────────
+
+function getDashboardPage(host, config, history, configStr) {
+  const historyHtml = history.length === 0
+    ? '<p class="subtitle">Zatím jsi nic nepřehrával. Pusť si film nebo seriál ve Stremiu a vrať se sem.</p>'
+    : history.map(h => `
+      <div class="history-item" data-imdb="${h.imdbId}" data-id="${h.id}" data-type="${h.type}" data-name="${h.name.replace(/"/g, '&quot;')}">
+        <img class="poster" src="${h.poster || 'https://via.placeholder.com/80x120/1c2030/8891a8?text=?'}" alt="${h.name}">
+        <div class="history-info">
+          <div class="history-title">${h.name}</div>
+          <div class="history-meta">${h.type === 'series' ? 'Seriál' : 'Film'} · ${h.imdbId}${h.id !== h.imdbId ? ' · ' + h.id.replace(/:/g, ' S').replace(/(\d+)\s*S/, 'S$1E') : ''}</div>
+          <button class="btn btn-upload" onclick="showUpload('${h.id.replace(/:/g, '-')}', '${h.name.replace(/'/g, "\\'")}', '${h.type}')">
+            📤 Nahrát titulky
+          </button>
+        </div>
+      </div>
+    `).join('');
+
+  return `<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard – Titulky.com Addon</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0c0e14; --surface: #151821; --surface-2: #1c2030;
+    --border: #2a2e40; --accent: #4f8cff; --accent-hover: #6ba0ff;
+    --text: #e4e7f0; --text-dim: #8891a8; --danger: #ff5c5c;
+    --success: #4fdb8a; --radius: 12px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'DM Sans', sans-serif; background: var(--bg);
+    color: var(--text); min-height: 100vh; padding: 24px;
+  }
+  .container { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 24px; margin-bottom: 8px; }
+  .subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 24px; }
+
+  .history-item {
+    display: flex; gap: 16px; padding: 16px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); margin-bottom: 12px;
+  }
+  .poster {
+    width: 70px; height: 100px; object-fit: cover;
+    border-radius: 8px; flex-shrink: 0; background: var(--surface-2);
+  }
+  .history-info { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+  .history-title { font-weight: 600; font-size: 16px; margin-bottom: 4px; }
+  .history-meta { color: var(--text-dim); font-size: 13px; margin-bottom: 12px; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 18px; border: none; border-radius: var(--radius);
+    font-family: inherit; font-size: 14px; font-weight: 500;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .btn-upload { background: var(--surface-2); color: var(--accent); border: 1px solid var(--border); }
+  .btn-upload:hover { background: var(--border); }
+  .btn-primary { background: var(--accent); color: #fff; width: 100%; justify-content: center; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-back { background: transparent; color: var(--text-dim); border: 1px solid var(--border); margin-bottom: 24px; }
+
+  .upload-modal {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    z-index: 100; align-items: center; justify-content: center; padding: 24px;
+  }
+  .upload-modal.show { display: flex; }
+  .upload-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 32px; max-width: 480px; width: 100%;
+  }
+  .upload-card h2 { font-size: 18px; margin-bottom: 16px; }
+
+  label { display: block; font-size: 13px; color: var(--text-dim); margin-bottom: 6px; margin-top: 16px; }
+  input, select {
+    width: 100%; padding: 12px 14px; border: 1px solid var(--border);
+    border-radius: var(--radius); background: var(--surface-2);
+    color: var(--text); font-family: inherit; font-size: 14px;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  input[type="file"] { padding: 10px; }
+  input[type="file"]::file-selector-button {
+    padding: 6px 14px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface-2); color: var(--text); cursor: pointer;
+    font-family: inherit; margin-right: 12px;
+  }
+
+  .status { margin-top: 16px; font-size: 14px; text-align: center; min-height: 20px; }
+  .status.ok { color: var(--success); }
+  .status.error { color: var(--danger); }
+  .close-btn {
+    float: right; background: none; border: none; color: var(--text-dim);
+    font-size: 20px; cursor: pointer; padding: 0 4px;
+  }
+  .close-btn:hover { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="container">
+  <a href="/${configStr}/configure" class="btn btn-back">← Zpět na konfiguraci</a>
+  <h1>📺 Poslední přehrávané</h1>
+  <p class="subtitle">Nahraj vlastní titulky k filmům a seriálům, které jsi přehrával.</p>
+
+  ${historyHtml}
+</div>
+
+<div class="upload-modal" id="uploadModal">
+  <div class="upload-card">
+    <button class="close-btn" onclick="hideUpload()">✕</button>
+    <h2 id="uploadTitle">Nahrát titulky</h2>
+
+    <label for="subFile">Soubor titulků (.srt, .ssa, .ass, .sub, .vtt)</label>
+    <input type="file" id="subFile" accept=".srt,.ssa,.ass,.sub,.vtt">
+
+    <label for="subLabel">Popis (volitelné)</label>
+    <input type="text" id="subLabel" placeholder="např. CZ, fansub, 1080p BluRay">
+
+    <label for="subLang">Jazyk</label>
+    <select id="subLang">
+      <option value="cze">Čeština</option>
+      <option value="slk">Slovenčina</option>
+      <option value="eng">Angličtina</option>
+    </select>
+
+    <button class="btn btn-primary" style="margin-top: 20px;" onclick="doUpload()">📤 Nahrát</button>
+    <div class="status" id="uploadStatus"></div>
+  </div>
+</div>
+
+<script>
+const CONFIG_STR = '${configStr}';
+let currentImdbId = '';
+
+function showUpload(id, name, type) {
+  currentImdbId = id;
+  document.getElementById('uploadTitle').textContent = 'Nahrát titulky – ' + name;
+  document.getElementById('uploadStatus').textContent = '';
+  document.getElementById('subFile').value = '';
+  document.getElementById('subLabel').value = '';
+  document.getElementById('uploadModal').classList.add('show');
+}
+
+function hideUpload() {
+  document.getElementById('uploadModal').classList.remove('show');
+}
+
+document.getElementById('uploadModal').addEventListener('click', function(e) {
+  if (e.target === this) hideUpload();
+});
+
+async function doUpload() {
+  const fileInput = document.getElementById('subFile');
+  const label = document.getElementById('subLabel').value.trim();
+  const lang = document.getElementById('subLang').value;
+  const status = document.getElementById('uploadStatus');
+
+  if (!fileInput.files.length) {
+    status.className = 'status error';
+    status.textContent = 'Vyber soubor';
+    return;
+  }
+
+  const file = fileInput.files[0];
+  if (!/\.(srt|ssa|ass|sub|vtt)$/i.test(file.name)) {
+    status.className = 'status error';
+    status.textContent = 'Podporované formáty: .srt, .ssa, .ass, .sub, .vtt';
+    return;
+  }
+
+  status.className = 'status';
+  status.textContent = 'Nahrávám…';
+
+  try {
+    const buf = await file.arrayBuffer();
+    const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+
+    const res = await fetch('/' + CONFIG_STR + '/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        imdbId: currentImdbId,
+        content: base64,
+        filename: file.name,
+        label: label || file.name.replace(/\.(srt|ssa|ass|sub|vtt)$/i, ''),
+        lang: lang,
+      }),
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      status.className = 'status ok';
+      status.textContent = '✓ Titulky nahrány!';
+      setTimeout(hideUpload, 1500);
+    } else {
+      status.className = 'status error';
+      status.textContent = 'Chyba: ' + (data.error || 'neznámá');
+    }
+  } catch (e) {
+    status.className = 'status error';
+    status.textContent = 'Chyba: ' + e.message;
+  }
+}
+</script>
+</body>
+</html>`;
+}
 
 app.listen(PORT, () => {
   console.log(`Titulky.com Stremio addon running on port ${PORT}`);
