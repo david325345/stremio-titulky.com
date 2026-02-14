@@ -436,13 +436,14 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     const customSubs = await r2GetCustomSubs(customImdbId);
     for (const cs of customSubs) {
       const ext = cs.filename.split('.').pop().toLowerCase();
-      const formatMap = { srt: 'srt', ssa: 'ssa', ass: 'ass', sub: 'sub', vtt: 'vtt' };
+      // ASS/SSA get converted to VTT on serve, others stay as-is
+      const subFormat = (ext === 'ass' || ext === 'ssa' || ext === 'vtt') ? 'vtt' : 'srt';
       subtitles.unshift({
         id: `custom-${cs.key}`,
         url: `${host}/custom-sub/${customImdbId}/${encodeURIComponent(cs.filename)}`,
         lang: `📌 ${cs.label}`,
         SubEncoding: 'UTF-8',
-        SubFormat: formatMap[ext] || 'srt',
+        SubFormat: subFormat,
       });
     }
 
@@ -628,6 +629,139 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
   }
 });
 
+// ── ASS/SSA to SRT converter ─────────────────────────────────────
+
+function assToVtt(assContent) {
+  const text = typeof assContent === 'string' ? assContent : assContent.toString('utf-8');
+  const lines = text.split(/\r?\n/);
+
+  // Parse [V4+ Styles] for color/style info
+  const styles = {};
+  let inStyles = false;
+  let styleFormat = [];
+
+  // Find [Events] section and parse Format line
+  let inEvents = false;
+  let formatFields = [];
+  const dialogues = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Styles section
+    if (/^\[V4\+?\s*Styles?\]/i.test(trimmed)) { inStyles = true; inEvents = false; continue; }
+    if (inStyles && /^Format:/i.test(trimmed)) {
+      styleFormat = trimmed.replace(/^Format:\s*/i, '').split(',').map(f => f.trim().toLowerCase());
+      continue;
+    }
+    if (inStyles && /^Style:/i.test(trimmed)) {
+      const parts = trimmed.replace(/^Style:\s*/i, '').split(',');
+      const nameIdx = styleFormat.indexOf('name');
+      const colorIdx = styleFormat.indexOf('primarycolour');
+      const boldIdx = styleFormat.indexOf('bold');
+      const italicIdx = styleFormat.indexOf('italic');
+      if (nameIdx >= 0 && parts[nameIdx]) {
+        styles[parts[nameIdx].trim()] = {
+          color: colorIdx >= 0 ? assColorToVtt(parts[colorIdx]?.trim()) : null,
+          bold: boldIdx >= 0 ? parts[boldIdx]?.trim() === '-1' || parts[boldIdx]?.trim() === '1' : false,
+          italic: italicIdx >= 0 ? parts[italicIdx]?.trim() === '-1' || parts[italicIdx]?.trim() === '1' : false,
+        };
+      }
+      continue;
+    }
+
+    // Events section
+    if (/^\[Events\]/i.test(trimmed)) { inEvents = true; inStyles = false; continue; }
+    if (/^\[/.test(trimmed) && inEvents) break;
+
+    if (inEvents && /^Format:/i.test(trimmed)) {
+      formatFields = trimmed.replace(/^Format:\s*/i, '').split(',').map(f => f.trim().toLowerCase());
+      continue;
+    }
+
+    if (inEvents && /^Dialogue:/i.test(trimmed)) {
+      const parts = trimmed.replace(/^Dialogue:\s*/i, '').split(',');
+      if (parts.length >= formatFields.length) {
+        const startIdx = formatFields.indexOf('start');
+        const endIdx = formatFields.indexOf('end');
+        const textIdx = formatFields.indexOf('text');
+        const styleIdx = formatFields.indexOf('style');
+
+        if (startIdx >= 0 && endIdx >= 0 && textIdx >= 0) {
+          const textParts = parts.slice(textIdx).join(',');
+          const styleName = styleIdx >= 0 ? parts[styleIdx]?.trim() : null;
+          dialogues.push({
+            start: assTimeToVtt(parts[startIdx].trim()),
+            end: assTimeToVtt(parts[endIdx].trim()),
+            text: assTextToVtt(textParts.trim(), styles[styleName] || null),
+          });
+        }
+      }
+    }
+  }
+
+  // Build VTT
+  let vtt = 'WEBVTT\n\n';
+  vtt += dialogues.map((d, i) =>
+    `${d.start} --> ${d.end}\n${d.text}\n`
+  ).join('\n');
+  return vtt;
+}
+
+function assTimeToVtt(assTime) {
+  // ASS: H:MM:SS.CC → VTT: HH:MM:SS.mmm
+  const m = assTime.match(/(\d+):(\d+):(\d+)\.(\d+)/);
+  if (!m) return '00:00:00.000';
+  const h = m[1].padStart(2, '0');
+  const min = m[2].padStart(2, '0');
+  const sec = m[3].padStart(2, '0');
+  const cs = m[4].padEnd(3, '0').substring(0, 3);
+  return `${h}:${min}:${sec}.${cs}`;
+}
+
+function assColorToVtt(assColor) {
+  if (!assColor) return null;
+  // ASS color: &HAABBGGRR or &HBBGGRR
+  const m = assColor.replace(/^&H/i, '').replace(/&$/, '');
+  if (m.length >= 6) {
+    const b = m.slice(-6, -4);
+    const g = m.slice(-4, -2);
+    const r = m.slice(-2);
+    return `#${r}${g}${b}`;
+  }
+  return null;
+}
+
+function assTextToVtt(text, style) {
+  let result = text;
+
+  // Convert inline ASS tags to VTT/HTML
+  // Bold
+  result = result.replace(/\{\\b1\}/g, '<b>').replace(/\{\\b0\}/g, '</b>');
+  // Italic
+  result = result.replace(/\{\\i1\}/g, '<i>').replace(/\{\\i0\}/g, '</i>');
+  // Underline
+  result = result.replace(/\{\\u1\}/g, '<u>').replace(/\{\\u0\}/g, '</u>');
+  // Color tags: {\c&HBBGGRR&} or {\1c&HBBGGRR&}
+  result = result.replace(/\{\\(?:1)?c&H([0-9A-Fa-f]{6})&?\}/g, (_, hex) => {
+    const color = assColorToVtt('&H' + hex);
+    return color ? `<c.color${color}>` : '';
+  });
+  // Remove remaining ASS tags
+  result = result.replace(/\{[^}]*\}/g, '');
+  // Newlines
+  result = result.replace(/\\N/g, '\n').replace(/\\n/g, '\n').replace(/\\h/g, ' ');
+
+  // Apply style-level formatting
+  if (style) {
+    if (style.bold) result = `<b>${result}</b>`;
+    if (style.italic) result = `<i>${result}</i>`;
+    if (style.color) result = `<c.color${style.color}>${result}</c>`;
+  }
+
+  return result.trim();
+}
+
 // ── Serve custom subtitle from R2 ─────────────────────────────────
 
 app.get('/custom-sub/:imdbId/:filename', async (req, res) => {
@@ -644,9 +778,24 @@ app.get('/custom-sub/:imdbId/:filename', async (req, res) => {
     for await (const chunk of getRes.Body) chunks.push(chunk);
     const buf = Buffer.concat(chunks);
 
+    // Convert ASS/SSA to VTT for Stremio compatibility (preserves more styling than SRT)
+    const ext = filename.split('.').pop().toLowerCase();
+    let content;
+    if (ext === 'ass' || ext === 'ssa') {
+      console.log(`[Custom] Converting ${ext.toUpperCase()} to VTT`);
+      content = assToVtt(buf);
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    } else if (ext === 'vtt') {
+      content = buf;
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    } else {
+      content = buf;
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    }
+
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.send(buf);
+    res.send(content);
   } catch (e) {
     console.error('[Custom] Serve error:', e.message);
     res.status(404).send('Not found');
