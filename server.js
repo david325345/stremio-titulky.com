@@ -263,7 +263,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       return {
         id: `titulky-${sub.id}`,
         url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-        lang: `${sub.lang === 'cze' ? 'cze' : sub.lang === 'slk' ? 'slk' : sub.lang} ${label}`,
+        lang: label || (sub.lang === 'cze' ? 'Čeština' : sub.lang === 'slk' ? 'Slovenčina' : sub.lang),
         SubEncoding: 'UTF-8',
         SubFormat: 'srt',
       };
