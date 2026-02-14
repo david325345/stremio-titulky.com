@@ -9,6 +9,119 @@ const PORT = process.env.PORT || 3000;
 const clientCache = new Map();
 const subtitleCache = new Map(); // cache downloaded subs for 1h
 const SUBTITLE_CACHE_TTL = 60 * 60 * 1000;
+const rdCache = new Map(); // cache RD lookups for 10 min
+const RD_CACHE_TTL = 10 * 60 * 1000;
+
+// ── Release tag matching ──────────────────────────────────────────
+
+const RELEASE_TAGS = [
+  'bluray', 'bdrip', 'brrip', 'bd-rip', 'blu-ray',
+  'web-dl', 'webdl', 'webrip', 'web-rip', 'web',
+  'hdtv', 'hdrip', 'dvdrip', 'dvd', 'dvdscr',
+  'hdcam', 'cam', 'ts', 'telesync', 'tc',
+  'remux', '2160p', '1080p', '720p', '480p',
+  'x264', 'x265', 'h264', 'h265', 'hevc', 'avc',
+  'hdr', 'hdr10', 'dv', 'dolby-vision', 'sdr',
+  'atmos', 'dts', 'dts-hd', 'truehd', 'aac', 'ac3', 'dd5',
+  'imax', 'repack', 'proper',
+];
+
+function extractReleaseTags(filename) {
+  if (!filename) return [];
+  const lower = filename.toLowerCase().replace(/[._]/g, ' ').replace(/[-]/g, ' ');
+  const found = [];
+  for (const tag of RELEASE_TAGS) {
+    const tagLower = tag.replace(/[-]/g, ' ');
+    if (lower.includes(tagLower)) found.push(tag);
+  }
+  return [...new Set(found)];
+}
+
+function scoreSubtitle(subVersion, playingTags) {
+  if (!subVersion || playingTags.length === 0) return 0;
+  const subTags = extractReleaseTags(subVersion);
+  let score = 0;
+  for (const tag of playingTags) {
+    if (subTags.includes(tag)) score += 10;
+  }
+  // Bonus for matching resolution
+  const resolutions = ['2160p', '1080p', '720p', '480p'];
+  for (const res of resolutions) {
+    if (playingTags.includes(res) && subTags.includes(res)) score += 20;
+  }
+  // Bonus for matching source type
+  const sources = ['bluray', 'web-dl', 'webdl', 'webrip', 'remux', 'hdtv'];
+  for (const src of sources) {
+    if (playingTags.includes(src) && subTags.includes(src)) score += 15;
+  }
+  return score;
+}
+
+// ── Real-Debrid API helper ────────────────────────────────────────
+
+async function getRDFilename(rdApiKey, playingFilename) {
+  if (!rdApiKey) return null;
+
+  const cacheKey = `rd-${rdApiKey.substring(0, 8)}`;
+  if (rdCache.has(cacheKey)) {
+    const cached = rdCache.get(cacheKey);
+    if (Date.now() - cached.time < RD_CACHE_TTL) {
+      return findBestRDMatch(cached.data, playingFilename);
+    }
+  }
+
+  try {
+    console.log('[RD] Fetching torrent history…');
+    const torrentsRes = await axios.get('https://api.real-debrid.com/rest/1.0/torrents?limit=100', {
+      headers: { Authorization: `Bearer ${rdApiKey}` },
+      timeout: 8000,
+    });
+
+    const torrents = torrentsRes.data || [];
+    console.log(`[RD] Got ${torrents.length} torrents`);
+
+    rdCache.set(cacheKey, { data: torrents, time: Date.now() });
+    return findBestRDMatch(torrents, playingFilename);
+  } catch (e) {
+    console.log('[RD] API error:', e.message);
+    return null;
+  }
+}
+
+function findBestRDMatch(torrents, playingFilename) {
+  if (!playingFilename || !torrents.length) return null;
+
+  // Extract meaningful parts from playing filename
+  const playingClean = decodeURIComponent(playingFilename).toLowerCase().replace(/[._]/g, ' ');
+
+  let bestMatch = null;
+  let bestScore = 0;
+
+  for (const torrent of torrents) {
+    const torrentName = (torrent.filename || '').toLowerCase().replace(/[._]/g, ' ');
+    if (!torrentName) continue;
+
+    // Simple word overlap score
+    const playWords = playingClean.split(/\s+/).filter(w => w.length > 2);
+    const torWords = torrentName.split(/\s+/).filter(w => w.length > 2);
+    let overlap = 0;
+    for (const w of playWords) {
+      if (torWords.includes(w)) overlap++;
+    }
+
+    if (overlap > bestScore) {
+      bestScore = overlap;
+      bestMatch = torrent.filename;
+    }
+  }
+
+  if (bestMatch && bestScore >= 2) {
+    console.log(`[RD] Best match: "${bestMatch}" (score: ${bestScore})`);
+    return bestMatch;
+  }
+
+  return null;
+}
 
 // ── Config helpers ────────────────────────────────────────────────
 
@@ -174,9 +287,37 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     console.log(`[Addon] Search titles: ${JSON.stringify(uniqueTitles)} (${type} ${id})`);
     const results = await client.search(uniqueTitles);
 
+    // Extract playing filename from Stremio extra params
+    const extraStr = req.params.extra || '';
+    const filenameMatch = extraStr.match(/filename=([^&]+)/);
+    const playingFilename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : '';
+
+    // Determine release tags from playing file
+    let playingTags = extractReleaseTags(playingFilename);
+
+    // If RD API key configured, try to get original torrent filename for better matching
+    if (config.rdApiKey && playingFilename) {
+      const rdFilename = await getRDFilename(config.rdApiKey, playingFilename);
+      if (rdFilename) {
+        const rdTags = extractReleaseTags(rdFilename);
+        // Merge tags (RD filename usually has better release info)
+        playingTags = [...new Set([...playingTags, ...rdTags])];
+        console.log(`[Addon] RD tags: ${rdTags.join(', ')} | Combined: ${playingTags.join(', ')}`);
+      }
+    }
+
+    console.log(`[Addon] Playing: "${playingFilename}" | Tags: ${playingTags.join(', ')}`);
+
+    // Score and sort subtitles
     const configStr = req.params.config;
-    const subtitles = results.map((sub) => {
-      const label = buildLabel(sub);
+    const scoredResults = results.map(sub => ({
+      sub,
+      score: scoreSubtitle(sub.version || sub.title, playingTags),
+    }));
+    scoredResults.sort((a, b) => b.score - a.score);
+
+    const subtitles = scoredResults.map(({ sub, score }) => {
+      const label = buildLabel(sub, score);
       return {
         id: `titulky-${sub.id}`,
         url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
@@ -193,9 +334,10 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
   }
 });
 
-function buildLabel(sub) {
+function buildLabel(sub, score) {
   let label = sub.version || sub.title || '';
   if (sub.author) label += ` by ${sub.author}`;
+  if (score > 0) label = `⭐ ${label}`;
   return label;
 }
 
@@ -498,6 +640,12 @@ function getConfigurePage(host) {
   <label for="password">Heslo</label>
   <input type="password" id="password" placeholder="Vaše heslo" autocomplete="current-password">
 
+  <hr class="divider">
+  <p class="subtitle" style="margin-bottom: 16px; font-size: 13px;">🔧 <strong>Volitelné:</strong> Real-Debrid API klíč pro lepší řazení titulků podle verze souboru. Získáte ho na <a href="https://real-debrid.com/apitoken" target="_blank" style="color: var(--accent);">real-debrid.com/apitoken</a></p>
+
+  <label for="rdApiKey">Real-Debrid API klíč</label>
+  <input type="text" id="rdApiKey" placeholder="Volitelné – pro řazení podle release" autocomplete="off">
+
   <button class="btn btn-primary" id="verifyBtn" onclick="verify()">
     <span class="spinner" id="spinner"></span>
     <span id="btnText">Ověřit a nainstalovat</span>
@@ -529,6 +677,7 @@ const HOST = '${host}';
 async function verify() {
   const username = document.getElementById('username').value.trim();
   const password = document.getElementById('password').value.trim();
+  const rdApiKey = document.getElementById('rdApiKey').value.trim();
   const status = document.getElementById('status');
   const result = document.getElementById('result');
   const btn = document.getElementById('verifyBtn');
@@ -560,7 +709,9 @@ async function verify() {
       status.className = 'status ok';
       status.textContent = '✓ Přihlášení úspěšné';
 
-      const config = btoa(JSON.stringify({ username, password }))
+      const configObj = { username, password };
+      if (rdApiKey) configObj.rdApiKey = rdApiKey;
+      const config = btoa(JSON.stringify(configObj))
         .replace(/[+]/g, '-').replace(/[/]/g, '_').replace(/=+$/, '');
       const manifestUrl = window.location.origin + '/' + config + '/manifest.json';
       const stremioUrl = 'stremio://' + manifestUrl.replace(/^https?:[/][/]/, '');
