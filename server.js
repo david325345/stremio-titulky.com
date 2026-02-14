@@ -564,30 +564,33 @@ function buildOmniLabel(sub, cached) {
   const version = sub.version || sub.title || '';
   const v = version.toLowerCase();
 
-  // Build label: Source + Resolution (quality first for Omni display)
-  const parts = [];
+  // Quality emoji for Omni display
+  let quality = '';
 
-  // Source type
-  if (v.includes('remux')) parts.push('Remux');
-  else if (v.includes('bluray') || v.includes('blu-ray') || v.includes('bdrip')) parts.push('BluRay');
-  else if (v.includes('web-dl') || v.includes('webdl')) parts.push('WEB-DL');
-  else if (v.includes('webrip')) parts.push('WebRip');
-  else if (v.includes('hdtv')) parts.push('HDTV');
-  else if (v.includes('dvdrip')) parts.push('DVDRip');
-  else if (v.includes('brrip')) parts.push('BRRip');
-
-  // Resolution
-  if (v.includes('2160p') || v.includes('4k')) parts.push('4K');
-  else if (v.includes('1080p')) parts.push('1080p');
-  else if (v.includes('720p')) parts.push('720p');
-
-  // Fallback if nothing detected
-  if (parts.length === 0) {
-    const langPrefix = sub.lang === 'slk' ? 'SK' : 'CZ';
-    return `${icon} ${langPrefix}`;
+  // Resolution + Source combined
+  if (v.includes('2160p') || v.includes('4k')) {
+    quality = '🔷'; // 4K
+  } else if (v.includes('remux')) {
+    quality = '💎'; // Remux
+  } else if (v.includes('bluray') || v.includes('blu-ray') || v.includes('bdrip') || v.includes('brrip')) {
+    quality = '💿'; // BluRay
+  } else if (v.includes('web-dl') || v.includes('webdl')) {
+    quality = '🌐'; // WEB-DL
+  } else if (v.includes('webrip')) {
+    quality = '🌐'; // WebRip
+  } else if (v.includes('hdtv')) {
+    quality = '📡'; // HDTV
+  } else if (v.includes('dvdrip') || v.includes('dvd')) {
+    quality = '📀'; // DVD
+  } else if (v.includes('1080p')) {
+    quality = '🎬'; // 1080p generic
+  } else if (v.includes('720p')) {
+    quality = '🎞'; // 720p generic
+  } else if (v.includes('cam') || v.includes('telesync')) {
+    quality = '📹'; // CAM
   }
 
-  return `${icon} ${parts.join(' ')}`;
+  return quality ? `${icon}${quality}` : `${icon}`;
 }
 
 // Quality ranking when no release tags from playing file
