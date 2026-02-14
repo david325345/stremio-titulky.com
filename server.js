@@ -221,30 +221,24 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     console.log(`[Addon] Search titles: ${JSON.stringify(uniqueTitles)} (${type} ${id})`);
     const results = await client.search(uniqueTitles);
 
-    // Extract year from meta for filtering
-    const metaYear = meta.year || meta.releaseInfo || (meta.released ? new Date(meta.released).getFullYear() : null);
-    const year = metaYear ? String(metaYear).match(/\d{4}/)?.[0] : null;
-
     // Extract playing filename from Stremio extra params
     const extraStr = req.params.extra || '';
     const filenameMatch = extraStr.match(/filename=([^&]+)/);
     const playingFilename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : '';
     const playingTags = extractReleaseTags(playingFilename);
 
-    console.log(`[Addon] Playing: "${playingFilename}" | Tags: ${playingTags.join(', ')} | Year: ${year}`);
+    console.log(`[Addon] Playing: "${playingFilename}" | Tags: ${playingTags.join(', ')}`);
 
-    // Filter by year — keep only subs whose title/linkFile contains the year (or no year info at all)
-    let filtered = results;
-    if (year) {
-      filtered = results.filter(sub => {
-        const text = `${sub.title} ${sub.linkFile}`;
-        // If the subtitle contains any 4-digit year, it must match
-        const yearsInSub = text.match(/\b(19|20)\d{2}\b/g);
-        if (!yearsInSub) return true; // no year in subtitle = ok
-        return yearsInSub.includes(year);
-      });
-      console.log(`[Addon] After year filter: ${filtered.length}/${results.length}`);
-    }
+    // Filter results by title match
+    const movieName = name.toLowerCase().replace(/[.!?]+$/, '').trim();
+
+    let filtered = results.filter(sub => {
+      const subTitle = (sub.title || '').toLowerCase().replace(/[._-]/g, ' ').trim();
+      const subLink = (sub.linkFile || '').toLowerCase().replace(/[._-]/g, ' ');
+      return isExactTitleMatch(movieName, subTitle) || isExactTitleMatch(movieName, subLink);
+    });
+
+    console.log(`[Addon] After filter: ${filtered.length}/${results.length}`);
 
     // Score subtitles
     const hasReleaseTags = playingTags.length > 0;
@@ -275,6 +269,27 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     res.json({ subtitles: [] });
   }
 });
+
+function isExactTitleMatch(movieName, subText) {
+  if (!movieName || !subText) return false;
+
+  // Normalize both strings
+  const movie = movieName.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+  const sub = subText.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+
+  // Direct match
+  if (sub === movie) return true;
+
+  // Sub starts with movie name, followed by year/space/end/release info
+  if (sub.startsWith(movie)) {
+    const after = sub.slice(movie.length).trim();
+    if (!after || /^\d{4}/.test(after) || /^(s\d|season|720|1080|2160|bluray|brrip|web|dvd|hdtv|x26)/i.test(after)) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 function buildLabel(sub, score, hasReleaseTags) {
   let label = sub.version || sub.title || '';
