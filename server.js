@@ -633,15 +633,28 @@ app.get('/custom-sub/:key(*)', async (req, res) => {
   if (!s3) return res.status(404).send('R2 not configured');
   try {
     const key = decodeURIComponent(req.params.key);
+    console.log(`[Custom] Serving: ${key}`);
     const getRes = await s3.send(new GetObjectCommand({
       Bucket: process.env.R2_BUCKET,
       Key: key,
     }));
     const chunks = [];
     for await (const chunk of getRes.Body) chunks.push(chunk);
-    const content = Buffer.concat(chunks).toString('utf-8');
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.send(content);
+    const buf = Buffer.concat(chunks);
+
+    // Detect format from key extension
+    const ext = key.split('.').pop().toLowerCase();
+    const contentTypes = {
+      srt: 'text/plain; charset=utf-8',
+      ass: 'text/x-ssa; charset=utf-8',
+      ssa: 'text/x-ssa; charset=utf-8',
+      sub: 'text/plain; charset=utf-8',
+      vtt: 'text/vtt; charset=utf-8',
+    };
+
+    res.setHeader('Content-Type', contentTypes[ext] || 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `inline; filename="${key.split('/').pop()}"`);
+    res.send(buf);
   } catch (e) {
     console.error('[Custom] Serve error:', e.message);
     res.status(404).send('Not found');
@@ -669,11 +682,17 @@ app.post('/:config/upload', express.json({ limit: '2mb' }), async (req, res) => 
     return res.status(400).json({ error: 'Missing fields' });
   }
 
-  // Convert base64 content to string, ensure UTF-8
-  let srtContent;
+  // Convert base64 content - only convert encoding for SRT, leave ASS/SSA as-is
+  let subContent;
   try {
     const buf = Buffer.from(content, 'base64');
-    srtContent = ensureUtf8(buf);
+    const ext = filename.split('.').pop().toLowerCase();
+    if (ext === 'srt' || ext === 'sub') {
+      subContent = ensureUtf8(buf);
+    } else {
+      // ASS/SSA/VTT — keep as-is (they usually have encoding declaration inside)
+      subContent = buf;
+    }
   } catch {
     return res.status(400).json({ error: 'Invalid file content' });
   }
@@ -681,7 +700,7 @@ app.post('/:config/upload', express.json({ limit: '2mb' }), async (req, res) => 
   const ok = await r2PutCustomSub(
     imdbId,
     filename.replace(/[^a-zA-Z0-9._-]/g, '_'),
-    srtContent,
+    subContent,
     label || filename.replace(/\.(srt|ssa|ass|sub|vtt)$/i, ''),
     lang || 'cze'
   );
