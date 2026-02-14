@@ -419,10 +419,28 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     // Extract playing filename from Stremio extra params
     const extraStr = req.params.extra || '';
     const filenameMatch = extraStr.match(/filename=([^&]+)/);
-    const playingFilename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : '';
+    let playingFilename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : '';
+
+    // Omni mode: if no filename and RD token available, get from Real-Debrid
+    if (!playingFilename && config.omni && config.rdToken) {
+      try {
+        console.log(`[RD] No filename from Stremio, checking Real-Debrid…`);
+        const rdRes = await axios.get('https://api.real-debrid.com/rest/1.0/downloads?limit=1', {
+          headers: { 'Authorization': `Bearer ${config.rdToken}` },
+          timeout: 5000,
+        });
+        if (rdRes.data && rdRes.data.length > 0) {
+          playingFilename = rdRes.data[0].filename || '';
+          console.log(`[RD] Got filename: "${playingFilename}"`);
+        }
+      } catch (e) {
+        console.log(`[RD] API error: ${e.message}`);
+      }
+    }
+
     const playingTags = extractReleaseTags(playingFilename);
 
-    console.log(`[Addon] Playing: "${playingFilename}" | Tags: ${playingTags.join(', ')}`);
+    console.log(`[Addon] Playing: "${playingFilename}" | Tags: ${playingTags.join(', ')}${!filenameMatch && config.omni ? ' (Omni' + (config.rdToken ? '+RD' : '') + ')' : ''}`);
 
     // Filter results by title match
     const movieName = name.toLowerCase().replace(/[.!?]+$/, '').trim();
@@ -1320,6 +1338,18 @@ function getConfigurePage(host) {
   <label for="password">Heslo</label>
   <input type="password" id="password" placeholder="Vaše heslo" autocomplete="current-password">
 
+  <div class="omni-section" style="margin-top: 20px;">
+    <label class="toggle-row" style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 0;">
+      <input type="checkbox" id="omniToggle" onchange="toggleOmni()" style="width: auto; accent-color: var(--accent); transform: scale(1.2);">
+      <span style="font-size: 14px; color: var(--text);">Omni mód <span style="color: var(--text-dim); font-size: 12px;">(pro Stremio bez názvů souborů)</span></span>
+    </label>
+    <div id="rdSection" style="display: none; margin-top: 12px; padding: 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);">
+      <label for="rdToken" style="margin-top: 0;">Real-Debrid API klíč</label>
+      <input type="text" id="rdToken" placeholder="Získejte na real-debrid.com/apitoken" style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">
+      <p style="font-size: 11px; color: var(--text-dim); margin-top: 6px;">Volitelné – lepší párování titulků podle přehrávaného souboru z RD.</p>
+    </div>
+  </div>
+
   <button class="btn btn-primary" id="verifyBtn" onclick="verify()">
     <span class="spinner" id="spinner"></span>
     <span id="btnText">Ověřit a nainstalovat</span>
@@ -1351,9 +1381,16 @@ function getConfigurePage(host) {
 <script>
 const HOST = '${host}';
 
+function toggleOmni() {
+  const checked = document.getElementById('omniToggle').checked;
+  document.getElementById('rdSection').style.display = checked ? 'block' : 'none';
+}
+
 async function verify() {
   const username = document.getElementById('username').value.trim();
   const password = document.getElementById('password').value.trim();
+  const omni = document.getElementById('omniToggle').checked;
+  const rdToken = document.getElementById('rdToken').value.trim();
   const status = document.getElementById('status');
   const result = document.getElementById('result');
   const btn = document.getElementById('verifyBtn');
@@ -1385,7 +1422,11 @@ async function verify() {
       status.className = 'status ok';
       status.textContent = '✓ Přihlášení úspěšné';
 
-      const config = btoa(JSON.stringify({ username, password }))
+      const configObj = { username, password };
+      if (omni) configObj.omni = true;
+      if (omni && rdToken) configObj.rdToken = rdToken;
+
+      const config = btoa(JSON.stringify(configObj))
         .replace(/[+]/g, '-').replace(/[/]/g, '_').replace(/=+$/, '');
       const manifestUrl = window.location.origin + '/' + config + '/manifest.json';
       const stremioUrl = 'stremio://' + manifestUrl.replace(/^https?:[/][/]/, '');
@@ -1435,6 +1476,13 @@ document.getElementById('password').addEventListener('keydown', e => {
     if (parsed.username && parsed.password) {
       document.getElementById('username').value = parsed.username;
       document.getElementById('password').value = parsed.password;
+      if (parsed.omni) {
+        document.getElementById('omniToggle').checked = true;
+        toggleOmni();
+      }
+      if (parsed.rdToken) {
+        document.getElementById('rdToken').value = parsed.rdToken;
+      }
       verify();
     }
   } catch {}
