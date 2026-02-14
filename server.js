@@ -131,25 +131,48 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     const client = await getClient(config);
     if (!client) return res.json({ subtitles: [] });
 
-    // Build search query
+    // Build search queries - try multiple title variants
     const meta = await getMeta(type, id);
     if (!meta) return res.json({ subtitles: [] });
 
-    let searchTitle;
+    const searchTitles = [];
+    const name = meta.name || meta.title || '';
+
     if (type === 'series') {
       const parts = id.split(':');
       const season = parts[1] ? parseInt(parts[1], 10) : 1;
       const episode = parts[2] ? parseInt(parts[2], 10) : 1;
-      const showName = meta.name || meta.title || '';
-      searchTitle = `${showName} S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+      const epStr = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+      // Try: "Show Name S01E01", then just "Show Name"
+      if (name) searchTitles.push(`${name} ${epStr}`);
+      if (meta.aliases) {
+        for (const alias of meta.aliases) {
+          if (alias && alias !== name) searchTitles.push(`${alias} ${epStr}`);
+        }
+      }
+      if (name) searchTitles.push(name);
     } else {
-      searchTitle = meta.name || meta.title || '';
+      // Movie: try name, then aliases, then name without special chars
+      if (name) searchTitles.push(name);
+      if (meta.aliases) {
+        for (const alias of meta.aliases) {
+          if (alias && alias !== name) searchTitles.push(alias);
+        }
+      }
+      // Try without trailing dots/punctuation
+      const cleaned = name.replace(/[.!?]+$/, '').trim();
+      if (cleaned && cleaned !== name) searchTitles.push(cleaned);
+      // Try just the first word if title is very short
+      if (name.split(' ').length <= 3 && name.length > 2) {
+        searchTitles.push(name);
+      }
     }
 
-    if (!searchTitle) return res.json({ subtitles: [] });
+    // Deduplicate
+    const uniqueTitles = [...new Set(searchTitles)].filter(t => t && t.length > 1);
 
-    console.log(`[Addon] Search: "${searchTitle}" (${type} ${id})`);
-    const results = await client.search(searchTitle);
+    console.log(`[Addon] Search titles: ${JSON.stringify(uniqueTitles)} (${type} ${id})`);
+    const results = await client.search(uniqueTitles);
 
     const configStr = req.params.config;
     const subtitles = results.map((sub) => {
