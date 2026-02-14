@@ -107,7 +107,6 @@ function getManifest(config, host) {
     logo: 'https://www.titulky.com/favicon.ico',
     behaviorHints: {
       configurable: true,
-      configurationRequired: true,
     },
   };
 }
