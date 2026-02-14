@@ -505,11 +505,20 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     const customSubs = await r2GetCustomSubs(customImdbId);
     for (const cs of customSubs) {
       const ext = cs.filename.split('.').pop().toLowerCase();
-      // ASS/SSA get converted to VTT on serve, others stay as-is
-      const subFormat = (ext === 'ass' || ext === 'ssa' || ext === 'vtt') ? 'vtt' : 'srt';
+      const isAssType = ext === 'ass' || ext === 'ssa';
+      // Omni: serve ASS/SSA raw (Omni player handles them natively)
+      // Normal Stremio: convert ASS/SSA to VTT
+      let subFormat, subUrl;
+      if (isOmni && isAssType) {
+        subFormat = ext;
+        subUrl = `${host}/custom-sub-raw/${customImdbId}/${encodeURIComponent(cs.filename)}`;
+      } else {
+        subFormat = (isAssType || ext === 'vtt') ? 'vtt' : 'srt';
+        subUrl = `${host}/custom-sub/${customImdbId}/${encodeURIComponent(cs.filename)}`;
+      }
       subtitles.unshift({
         id: `custom-${cs.key}`,
-        url: `${host}/custom-sub/${customImdbId}/${encodeURIComponent(cs.filename)}`,
+        url: subUrl,
         lang: isOmni ? `📌 ${cs.lang === 'slk' ? 'SK' : 'CZ'}` : `📌 ${cs.label}`,
         SubEncoding: 'UTF-8',
         SubFormat: subFormat,
@@ -553,27 +562,32 @@ function buildLabel(sub, score, hasReleaseTags) {
 function buildOmniLabel(sub, cached) {
   const icon = cached ? '✅' : '⬇️';
   const version = sub.version || sub.title || '';
-  const langPrefix = sub.lang === 'slk' ? 'SK' : 'CZ';
-
-  // Extract key quality info from version name
-  const tags = [];
   const v = version.toLowerCase();
 
+  // Build label: Source + Resolution (quality first for Omni display)
+  const parts = [];
+
+  // Source type
+  if (v.includes('remux')) parts.push('Remux');
+  else if (v.includes('bluray') || v.includes('blu-ray') || v.includes('bdrip')) parts.push('BluRay');
+  else if (v.includes('web-dl') || v.includes('webdl')) parts.push('WEB-DL');
+  else if (v.includes('webrip')) parts.push('WebRip');
+  else if (v.includes('hdtv')) parts.push('HDTV');
+  else if (v.includes('dvdrip')) parts.push('DVDRip');
+  else if (v.includes('brrip')) parts.push('BRRip');
+
   // Resolution
-  if (v.includes('2160p') || v.includes('4k')) tags.push('4K');
-  else if (v.includes('1080p')) tags.push('1080p');
-  else if (v.includes('720p')) tags.push('720p');
+  if (v.includes('2160p') || v.includes('4k')) parts.push('4K');
+  else if (v.includes('1080p')) parts.push('1080p');
+  else if (v.includes('720p')) parts.push('720p');
 
-  // Source
-  if (v.includes('remux')) tags.push('Remux');
-  else if (v.includes('bluray') || v.includes('blu-ray')) tags.push('BluRay');
-  else if (v.includes('web-dl') || v.includes('webdl')) tags.push('WEB-DL');
-  else if (v.includes('webrip')) tags.push('WebRip');
-  else if (v.includes('hdtv')) tags.push('HDTV');
-  else if (v.includes('dvdrip')) tags.push('DVDRip');
+  // Fallback if nothing detected
+  if (parts.length === 0) {
+    const langPrefix = sub.lang === 'slk' ? 'SK' : 'CZ';
+    return `${icon} ${langPrefix}`;
+  }
 
-  const tagStr = tags.length > 0 ? ' ' + tags.join(' ') : '';
-  return `${icon} ${langPrefix}${tagStr}`;
+  return `${icon} ${parts.join(' ')}`;
 }
 
 // Quality ranking when no release tags from playing file
@@ -894,11 +908,35 @@ app.get('/custom-sub/:imdbId/:filename', async (req, res) => {
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     }
 
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.send(content);
   } catch (e) {
     console.error('[Custom] Serve error:', e.message);
+    res.status(404).send('Not found');
+  }
+});
+
+// ── Serve custom subtitle RAW from R2 (no conversion, for Omni) ──
+
+app.get('/custom-sub-raw/:imdbId/:filename', async (req, res) => {
+  if (!s3) return res.status(404).send('R2 not configured');
+  try {
+    const { imdbId, filename } = req.params;
+    const key = `custom/${imdbId}/${filename}`;
+    console.log(`[Custom] Serving RAW: ${key}`);
+    const getRes = await s3.send(new GetObjectCommand({
+      Bucket: process.env.R2_BUCKET,
+      Key: key,
+    }));
+    const chunks = [];
+    for await (const chunk of getRes.Body) chunks.push(chunk);
+    const buf = Buffer.concat(chunks);
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.send(buf);
+  } catch (e) {
+    console.error('[Custom] Raw serve error:', e.message);
     res.status(404).send('Not found');
   }
 });
