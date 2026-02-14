@@ -237,7 +237,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     }));
     scoredResults.sort((a, b) => b.score - a.score);
 
-    const subtitles = scoredResults.map(({ sub, score }) => {
+    const subtitles = scoredResults.slice(0, 10).map(({ sub, score }) => {
       const label = buildLabel(sub, score);
       return {
         id: `titulky-${sub.id}`,
@@ -257,7 +257,6 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
 
 function buildLabel(sub, score) {
   let label = sub.version || sub.title || '';
-  if (sub.author) label += ` by ${sub.author}`;
   if (score > 0) label = `⭐ ${label}`;
   return label;
 }
