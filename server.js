@@ -221,28 +221,49 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     console.log(`[Addon] Search titles: ${JSON.stringify(uniqueTitles)} (${type} ${id})`);
     const results = await client.search(uniqueTitles);
 
+    // Extract year from meta for filtering
+    const metaYear = meta.year || meta.releaseInfo || (meta.released ? new Date(meta.released).getFullYear() : null);
+    const year = metaYear ? String(metaYear).match(/\d{4}/)?.[0] : null;
+
     // Extract playing filename from Stremio extra params
     const extraStr = req.params.extra || '';
     const filenameMatch = extraStr.match(/filename=([^&]+)/);
     const playingFilename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : '';
     const playingTags = extractReleaseTags(playingFilename);
 
-    console.log(`[Addon] Playing: "${playingFilename}" | Tags: ${playingTags.join(', ')}`);
+    console.log(`[Addon] Playing: "${playingFilename}" | Tags: ${playingTags.join(', ')} | Year: ${year}`);
 
-    // Score and sort subtitles by release match
-    const configStr = req.params.config;
-    const scoredResults = results.map(sub => ({
+    // Filter by year — keep only subs whose title/linkFile contains the year (or no year info at all)
+    let filtered = results;
+    if (year) {
+      filtered = results.filter(sub => {
+        const text = `${sub.title} ${sub.linkFile}`;
+        // If the subtitle contains any 4-digit year, it must match
+        const yearsInSub = text.match(/\b(19|20)\d{2}\b/g);
+        if (!yearsInSub) return true; // no year in subtitle = ok
+        return yearsInSub.includes(year);
+      });
+      console.log(`[Addon] After year filter: ${filtered.length}/${results.length}`);
+    }
+
+    // Score subtitles
+    const hasReleaseTags = playingTags.length > 0;
+    const scoredResults = filtered.map(sub => ({
       sub,
-      score: scoreSubtitle(sub.version || sub.title, playingTags),
+      score: hasReleaseTags
+        ? scoreSubtitle(sub.version || sub.title, playingTags)
+        : qualityScore(sub.version || sub.title),
     }));
     scoredResults.sort((a, b) => b.score - a.score);
 
+    // Build response — max 10
+    const configStr = req.params.config;
     const subtitles = scoredResults.slice(0, 10).map(({ sub, score }) => {
-      const label = buildLabel(sub, score);
+      const label = buildLabel(sub, score, hasReleaseTags);
       return {
         id: `titulky-${sub.id}`,
         url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-        lang: `${sub.lang === 'cze' ? 'cze' : sub.lang === 'slk' ? 'slk' : sub.lang} [Titulky.com] ${label}`,
+        lang: `${sub.lang === 'cze' ? 'cze' : sub.lang === 'slk' ? 'slk' : sub.lang} ${label}`,
         SubEncoding: 'UTF-8',
         SubFormat: 'srt',
       };
@@ -255,10 +276,46 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
   }
 });
 
-function buildLabel(sub, score) {
+function buildLabel(sub, score, hasReleaseTags) {
   let label = sub.version || sub.title || '';
-  if (score > 0) label = `⭐ ${label}`;
+  if (hasReleaseTags && score > 0) label = `⭐ ${label}`;
   return label;
+}
+
+// Quality ranking when no release tags from playing file
+const QUALITY_ORDER = [
+  { tag: '2160p', score: 100 },
+  { tag: 'remux', score: 95 },
+  { tag: 'bdremux', score: 95 },
+  { tag: 'bluray', score: 90 },
+  { tag: 'blu-ray', score: 90 },
+  { tag: '1080p', score: 80 },
+  { tag: 'web-dl', score: 70 },
+  { tag: 'webdl', score: 70 },
+  { tag: 'webrip', score: 65 },
+  { tag: '720p', score: 60 },
+  { tag: 'hdtv', score: 50 },
+  { tag: 'hdrip', score: 45 },
+  { tag: 'brrip', score: 40 },
+  { tag: 'bdrip', score: 40 },
+  { tag: 'dvdrip', score: 30 },
+  { tag: 'dvd', score: 25 },
+  { tag: '480p', score: 20 },
+  { tag: 'hdcam', score: 10 },
+  { tag: 'cam', score: 5 },
+  { tag: 'ts', score: 5 },
+  { tag: 'telesync', score: 5 },
+];
+
+function qualityScore(text) {
+  if (!text) return 0;
+  const lower = text.toLowerCase().replace(/[._]/g, ' ').replace(/[-]/g, ' ');
+  let best = 0;
+  for (const q of QUALITY_ORDER) {
+    const tagLower = q.tag.replace(/[-]/g, ' ');
+    if (lower.includes(tagLower) && q.score > best) best = q.score;
+  }
+  return best;
 }
 
 // ── Subtitle download proxy ───────────────────────────────────────
