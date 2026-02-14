@@ -519,7 +519,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       subtitles.unshift({
         id: `custom-${cs.key}`,
         url: subUrl,
-        lang: isOmni ? `📌 ${cs.lang === 'slk' ? 'SK' : 'CZ'}` : `📌 ${cs.label}`,
+        lang: isOmni ? '📌' : `📌 ${cs.label}`,
         SubEncoding: 'UTF-8',
         SubFormat: subFormat,
       });
