@@ -574,7 +574,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         subtitles.push({
           id: cleanId,
           url: subUrl,
-          lang: `CZ Nahrane ${omniCounters['✅📌']}`,
+          lang: `Bluray`,
           SubEncoding: 'UTF-8',
           SubFormat: isAssType ? 'srt' : subFormat,
         });
@@ -587,6 +587,18 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
           SubFormat: subFormat,
         });
       }
+    }
+
+    // Omni workaround: if only custom subs exist (no titulky.com results),
+    // Omni won't display them when there's just 1 result. Add a padding entry.
+    if (isOmni && subtitles.length === 1) {
+      subtitles.push({
+        id: `titulky-pad-${Date.now()}`,
+        url: subtitles[0].url,
+        lang: `✅📌2️⃣`,
+        SubEncoding: 'UTF-8',
+        SubFormat: 'srt',
+      });
     }
 
     console.log(`[Addon] Returning ${subtitles.length} subtitle(s)`, JSON.stringify(subtitles.map(s => ({ id: s.id, lang: s.lang, SubFormat: s.SubFormat, url: s.url.substring(0, 80) }))));
