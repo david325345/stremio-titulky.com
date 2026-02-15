@@ -574,7 +574,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         subtitles.push({
           id: cleanId,
           url: subUrl,
-          lang: `Bluray`,
+          lang: `✅📌${num}`,
           SubEncoding: 'UTF-8',
           SubFormat: isAssType ? 'srt' : subFormat,
         });
@@ -595,9 +595,9 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       subtitles.push({
         id: `titulky-pad-${Date.now()}`,
         url: subtitles[0].url,
-        lang: `✅📌2️⃣`,
+        lang: subtitles[0].lang,
         SubEncoding: 'UTF-8',
-        SubFormat: 'srt',
+        SubFormat: subtitles[0].SubFormat,
       });
     }
 
