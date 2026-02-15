@@ -601,16 +601,12 @@ function numberEmoji(n) {
 
 function getQualityEmoji(version) {
   const v = (version || '').toLowerCase();
-  if (v.includes('2160p') || v.includes('4k')) return '🔷';
   if (v.includes('remux')) return '💎';
-  if (v.includes('bluray') || v.includes('blu-ray') || v.includes('bdrip') || v.includes('brrip')) return '💿';
-  if (v.includes('web-dl') || v.includes('webdl')) return '🌐';
-  if (v.includes('webrip')) return '🌐';
-  if (v.includes('hdtv')) return '📡';
-  if (v.includes('dvdrip') || v.includes('dvd')) return '📀';
-  if (v.includes('1080p')) return '🎬';
-  if (v.includes('720p')) return '🎞';
-  if (v.includes('cam') || v.includes('telesync')) return '📹';
+  if (v.includes('bluray') || v.includes('blu-ray') || v.includes('bdrip') || v.includes('brrip') || v.includes('2160p') || v.includes('4k')) return '🟢';
+  if (v.includes('web-dl') || v.includes('webdl') || v.includes('webrip') || v.includes('web')) return '🟡';
+  if (v.includes('hdtv')) return '🟠';
+  if (v.includes('dvdrip') || v.includes('dvd')) return '🔴';
+  if (v.includes('cam') || v.includes('telesync')) return '⚫';
   return '';
 }
 
