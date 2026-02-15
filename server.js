@@ -438,7 +438,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
           const ageMs = Date.now() - generated;
           const ageMin = (ageMs / 60000).toFixed(1);
 
-          if (ageMs < 3 * 60 * 1000) {
+          if (ageMs > 0 && ageMs < 3 * 60 * 1000) {
             playingFilename = item.filename || '';
             console.log(`[RD] Got filename: "${playingFilename}" (${ageMin}min ago)`);
           } else {
@@ -539,10 +539,13 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         subUrl = `${host}/custom-sub/${customImdbId}/${encodeURIComponent(cs.filename)}`;
       }
       if (isOmni) {
+        if (!omniCounters['📌']) omniCounters['📌'] = 0;
+        omniCounters['📌']++;
+        const num = numberEmoji(omniCounters['📌']);
         subtitles.unshift({
           id: `custom-${cs.key}`,
           url: subUrl,
-          lang: '📌',
+          lang: `📌${num}`,
           SubEncoding: 'UTF-8',
           SubFormat: subFormat,
         });
