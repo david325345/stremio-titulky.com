@@ -570,8 +570,9 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         if (!omniCounters['📌']) omniCounters['📌'] = 0;
         omniCounters['📌']++;
         const num = numberEmoji(omniCounters['📌']);
+        const cleanId = cs.filename.replace(/[^a-zA-Z0-9]/g, '');
         subtitles.unshift({
-          id: `custom-${cs.key}`,
+          id: `titulky-custom-${cleanId}`,
           url: subUrl,
           lang: `📌${num}`,
           SubEncoding: 'UTF-8',
