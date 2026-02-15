@@ -428,21 +428,30 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     if (!isUsableFilename && config.rdToken) {
       try {
         console.log(`[RD] No usable filename from Stremio (got: "${playingFilename}"), checking Real-Debrid…`);
+        
+        // Try /downloads first
         const rdRes = await axios.get('https://api.real-debrid.com/rest/1.0/downloads?limit=1', {
           headers: { 'Authorization': `Bearer ${config.rdToken}` },
           timeout: 5000,
         });
-        if (rdRes.data && rdRes.data.length > 0) {
-          const item = rdRes.data[0];
-          const generated = new Date(item.generated).getTime();
-          const ageMs = Date.now() - generated;
-          const ageMin = (ageMs / 60000).toFixed(1);
-
-          if (ageMs > 0 && ageMs < 3 * 60 * 1000) {
-            playingFilename = item.filename || '';
-            console.log(`[RD] Got filename: "${playingFilename}" (${ageMin}min ago)`);
-          } else {
-            console.log(`[RD] Last download too old (${ageMin}min ago): "${item.filename}" → using IMDB title + quality sort`);
+        if (rdRes.data && rdRes.data.length > 0 && rdRes.data[0].filename) {
+          playingFilename = rdRes.data[0].filename;
+          console.log(`[RD] Got filename from /downloads: "${playingFilename}"`);
+        }
+        
+        // If still no usable filename, try /torrents
+        if (extractReleaseTags(playingFilename).length === 0) {
+          const rdTorrents = await axios.get('https://api.real-debrid.com/rest/1.0/torrents?limit=5', {
+            headers: { 'Authorization': `Bearer ${config.rdToken}` },
+            timeout: 5000,
+          });
+          if (rdTorrents.data && rdTorrents.data.length > 0) {
+            // Pick most recent torrent with a filename
+            const torrent = rdTorrents.data[0];
+            if (torrent.filename) {
+              playingFilename = torrent.filename;
+              console.log(`[RD] Got filename from /torrents: "${playingFilename}"`);
+            }
           }
         }
       } catch (e) {
