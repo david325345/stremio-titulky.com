@@ -3,6 +3,8 @@ const TitulkyClient = require('./lib/titulkyClient');
 const axios = require('axios');
 const iconv = require('iconv-lite');
 const { S3Client, GetObjectCommand, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const AdmZip = require('adm-zip');
+const multer = require('multer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -328,7 +330,7 @@ function getManifest(config, host) {
   const configStr = encodeConfig(config);
   return {
     id: 'community.titulky.com',
-    version: '1.0.0',
+    version: '1.0.1', // Bump version
     name: 'Titulky.com',
     description: 'České a slovenské titulky z Titulky.com',
     catalogs: [],
@@ -493,14 +495,21 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     const subtitles = scoredResults.slice(0, 10).map(({ sub, score }) => {
       const cached = r2CachedIds.has(String(sub.id));
 
+      // Create a short hash/suffix from version to prevent ID collisions in Omni
+      const versionSuffix = (sub.version || sub.title || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 10);
+
       if (isOmni) {
+        // Omni relies on Content-Disposition filename for display, 
+        // but lang must be clean if we want correct filtering (though we use filename for display)
+        // We keep emojis in lang for Stremio Desktop, but Omni will use Filename.
         const icon = cached ? '✅' : '⬇️';
         const star = (hasReleaseTags && score > 0) ? '⭐' : '';
         const quality = getQualityEmoji(sub.version || sub.title || '');
         return {
-          id: `titulky-${sub.id}`,
+          // FIX: Unique ID to prevent Omni merging
+          id: `titulky-${sub.id}-${versionSuffix}`,
           url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-          lang: `${icon}${star}${quality}`,
+          lang: `${icon}${star}${quality}`, // Stremio Desktop uses this
           SubEncoding: 'UTF-8',
           SubFormat: 'vtt',
         };
@@ -508,7 +517,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         const label = buildLabel(sub, score, hasReleaseTags);
         const icon = cached ? '✅' : '⬇️';
         return {
-          id: `titulky-${sub.id}`,
+          id: `titulky-${sub.id}`, // Standard ID
           url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
           lang: `${icon} ${label || (sub.lang === 'cze' ? 'Čeština' : sub.lang === 'slk' ? 'Slovenčina' : sub.lang)}`,
           SubEncoding: 'UTF-8',
@@ -653,7 +662,7 @@ function ensureUtf8(buffer) {
 }
 
 function isValidUtf8(str) {
-  // If decoding as UTF-8 produces replacement characters (�) for common
+  // If decoding as UTF-8 produces replacement characters ( ) for common
   // Czech/Slovak byte sequences, it's likely CP1250
   // Check for typical CP1250 patterns that become garbled in UTF-8
   const replacements = (str.match(/\uFFFD/g) || []).length;
@@ -685,6 +694,13 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
   function sendSub(content, filename) {
     if (isOmni) {
       const vtt = srtToVtt(content);
+      
+      // FIX: Critical for Omni/Infuse. 
+      // Omni displays the filename from Content-Disposition header, not from JSON lang.
+      // We must change extension to .vtt as content is VTT.
+      const displayFilename = filename.replace('.srt', '.vtt');
+      
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(displayFilename)}"`);
       res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
       return res.send(vtt);
     }
@@ -1068,8 +1084,6 @@ app.post('/:config/custom-delete', express.json(), async (req, res) => {
 
 // ── Admin: Download backup (ZIP of entire R2 bucket) ─────────────
 
-const AdmZip = require('adm-zip');
-
 app.get('/:config/admin/backup', async (req, res) => {
   const config = decodeConfig(req.params.config);
   if (!config || !isAdmin(config.username)) return res.status(403).send('Forbidden');
@@ -1123,8 +1137,6 @@ app.get('/:config/admin/backup', async (req, res) => {
 });
 
 // ── Admin: Restore backup (upload ZIP) ───────────────────────────
-
-const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 app.post('/:config/admin/restore', upload.single('backup'), async (req, res) => {
@@ -1226,7 +1238,7 @@ function getConfigurePage(host) {
     --border: #2a2e40;
     --accent: #4f8cff;
     --accent-hover: #6ba0ff;
-    --accent-glow: rgba(79, 140, 255, 0.15);
+    --accent-glow: rgba(79,140,255,0.15);
     --text: #e4e7f0;
     --text-dim: #8891a8;
     --danger: #ff5c5c;
@@ -1590,7 +1602,7 @@ document.getElementById('password').addEventListener('keydown', e => {
 </html>`;
 }
 
-// ── Start ─────────────────────────────────────────────────────────
+// ── Dashboard HTML ───────────────────────────────────────────────
 
 function getDashboardPage(host, config, history, configStr) {
   const historyHtml = history.length === 0
