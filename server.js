@@ -589,15 +589,16 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       }
     }
 
-    // Omni workaround: if only custom subs exist (no titulky.com results),
-    // Omni won't display them when there's just 1 result. Add a padding entry.
-    if (isOmni && subtitles.length === 1) {
-      subtitles.push({
-        id: `titulky-pad-${Date.now()}`,
-        url: subtitles[0].url,
-        lang: subtitles[0].lang,
+    // Omni workaround: Omni only shows emoji when normal titulky results exist.
+    // If only custom subs, prepend a dummy with normal-style emoji to trigger emoji display.
+    if (isOmni && scoredResults.length === 0 && subtitles.length > 0) {
+      const firstCustom = subtitles[0];
+      subtitles.unshift({
+        id: `titulky-0`,
+        url: firstCustom.url,
+        lang: `✅1️⃣`,
         SubEncoding: 'UTF-8',
-        SubFormat: subtitles[0].SubFormat,
+        SubFormat: firstCustom.SubFormat,
       });
     }
 
