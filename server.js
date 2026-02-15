@@ -576,7 +576,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
           url: subUrl,
           lang: `✅📌${num}`,
           SubEncoding: 'UTF-8',
-          SubFormat: subFormat,
+          SubFormat: isAssType ? 'srt' : subFormat,
         });
       } else {
         subtitles.unshift({
