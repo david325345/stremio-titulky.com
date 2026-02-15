@@ -478,25 +478,35 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     // Build response — max 10
     const configStr = req.params.config;
     const isOmni = !!config.omni;
-    const subtitles = scoredResults.slice(0, 10).map(({ sub, score }) => {
+    const subtitles = scoredResults.slice(0, 10).map(({ sub, score }, idx) => {
       const cached = r2CachedIds.has(String(sub.id));
 
-      let langLabel;
       if (isOmni) {
-        langLabel = buildOmniLabel(sub, cached);
+        const icon = cached ? '✅' : '⬇️';
+        const version = sub.version || sub.title || 'Titulky.com';
+        const langCode = sub.lang === 'slk' ? 'sk' : 'cs';
+        const result = {
+          id: `titulky-${sub.id}`,
+          url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
+          lang: langCode,
+          label: `${icon} ${version}`,
+          SubEncoding: 'UTF-8',
+          SubFormat: 'vtt',
+        };
+        if (idx === 0) result.default = true;
+        return result;
       } else {
         const label = buildLabel(sub, score, hasReleaseTags);
         const icon = cached ? '✅' : '⬇️';
-        langLabel = `${icon} ${label || (sub.lang === 'cze' ? 'Čeština' : sub.lang === 'slk' ? 'Slovenčina' : sub.lang)}`;
+        const langLabel = `${icon} ${label || (sub.lang === 'cze' ? 'Čeština' : sub.lang === 'slk' ? 'Slovenčina' : sub.lang)}`;
+        return {
+          id: `titulky-${sub.id}`,
+          url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
+          lang: langLabel,
+          SubEncoding: 'UTF-8',
+          SubFormat: 'srt',
+        };
       }
-
-      return {
-        id: `titulky-${sub.id}`,
-        url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-        lang: langLabel,
-        SubEncoding: 'UTF-8',
-        SubFormat: 'srt',
-      };
     });
 
     // Add custom subtitles from R2 (user-uploaded)
@@ -506,8 +516,6 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     for (const cs of customSubs) {
       const ext = cs.filename.split('.').pop().toLowerCase();
       const isAssType = ext === 'ass' || ext === 'ssa';
-      // Omni: serve ASS/SSA raw (Omni player handles them natively)
-      // Normal Stremio: convert ASS/SSA to VTT
       let subFormat, subUrl;
       if (isOmni && isAssType) {
         subFormat = ext;
@@ -516,13 +524,27 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         subFormat = (isAssType || ext === 'vtt') ? 'vtt' : 'srt';
         subUrl = `${host}/custom-sub/${customImdbId}/${encodeURIComponent(cs.filename)}`;
       }
-      subtitles.unshift({
-        id: `custom-${cs.key}`,
-        url: subUrl,
-        lang: isOmni ? '📌' : `📌 ${cs.label}`,
-        SubEncoding: 'UTF-8',
-        SubFormat: subFormat,
-      });
+
+      if (isOmni) {
+        const langCode = cs.lang === 'slk' ? 'sk' : 'cs';
+        subtitles.unshift({
+          id: `custom-${cs.key}`,
+          url: subUrl,
+          lang: langCode,
+          label: `📌 ${cs.label}`,
+          default: subtitles.length === 0,
+          SubEncoding: 'UTF-8',
+          SubFormat: subFormat,
+        });
+      } else {
+        subtitles.unshift({
+          id: `custom-${cs.key}`,
+          url: subUrl,
+          lang: `📌 ${cs.label}`,
+          SubEncoding: 'UTF-8',
+          SubFormat: subFormat,
+        });
+      }
     }
 
     res.json({ subtitles });
@@ -680,17 +702,28 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
   const config = decodeConfig(req.params.config);
   if (!config) return res.status(400).send('Invalid config');
 
+  const isOmni = !!config.omni;
   const { subId, linkFile } = req.params;
   const cacheKey = `${subId}-${linkFile}`;
+
+  // Helper: send subtitle with optional SRT→VTT conversion for Omni
+  function sendSub(content, filename) {
+    if (isOmni) {
+      const vtt = srtToVtt(content);
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+      return res.send(vtt);
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.send(content);
+  }
 
   // 1. Check in-memory cache
   if (subtitleCache.has(cacheKey)) {
     const cached = subtitleCache.get(cacheKey);
     if (Date.now() - cached.time < SUBTITLE_CACHE_TTL) {
-      console.log(`[Addon] Serving memory-cached subtitle ${subId}`);
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="${cached.filename}"`);
-      return res.send(cached.content);
+      console.log(`[Addon] Serving memory-cached subtitle ${subId}${isOmni ? ' (VTT)' : ''}`);
+      return sendSub(cached.content, cached.filename);
     }
     subtitleCache.delete(cacheKey);
   }
@@ -698,11 +731,8 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
   // 2. Check R2 cloud cache
   const r2Cached = await r2Get(subId);
   if (r2Cached) {
-    // Store in memory cache too
     subtitleCache.set(cacheKey, { ...r2Cached, time: Date.now() });
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${r2Cached.filename}"`);
-    return res.send(r2Cached.content);
+    return sendSub(r2Cached.content, r2Cached.filename);
   }
 
   // 3. Download from titulky.com
@@ -715,20 +745,16 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
 
     if (!files || files.length === 0) {
       console.log(`[Addon] Download failed for ${subId} - captcha or limit reached`);
-      const limitSrt = `1
-00:00:01,000 --> 00:00:30,000
-Překročili jste denní limit stažení titulků z Titulky.com. Stáhněte titulky které jsou v cachi (označené ✅) nebo počkejte na reset limitu do dalšího dne.
-`;
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.send(limitSrt);
+      const limitMsg = isOmni
+        ? `WEBVTT\n\n1\n00:00:01.000 --> 00:00:30.000\nPřekročili jste denní limit stažení titulků z Titulky.com. Stáhněte titulky které jsou v cachi (označené ✅) nebo počkejte na reset limitu do dalšího dne.\n`
+        : `1\n00:00:01,000 --> 00:00:30,000\nPřekročili jste denní limit stažení titulků z Titulky.com. Stáhněte titulky které jsou v cachi (označené ✅) nebo počkejte na reset limitu do dalšího dne.\n`;
+      res.setHeader('Content-Type', isOmni ? 'text/vtt; charset=utf-8' : 'text/plain; charset=utf-8');
+      return res.send(limitMsg);
     }
 
     const file = files[0];
-
-    // Convert encoding to UTF-8 if needed
     const utf8Content = ensureUtf8(file.content);
 
-    // Save to memory cache
     subtitleCache.set(cacheKey, {
       content: utf8Content,
       filename: file.filename,
@@ -738,14 +764,23 @@ Překročili jste denní limit stažení titulků z Titulky.com. Stáhněte titu
     // Save to R2 cloud cache (async, don't wait)
     r2Put(subId, utf8Content, file.filename);
 
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
-    res.send(utf8Content);
+    return sendSub(utf8Content, file.filename);
   } catch (e) {
     console.error('[Addon] Download error:', e.message);
     res.status(500).send('Download failed');
   }
 });
+
+// ── SRT to VTT converter ─────────────────────────────────────────
+
+function srtToVtt(srtContent) {
+  const text = typeof srtContent === 'string' ? srtContent : srtContent.toString('utf-8');
+  // Replace SRT time format commas with VTT dots
+  const vttBody = text
+    .replace(/\r\n/g, '\n')
+    .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+  return 'WEBVTT\n\n' + vttBody.trim() + '\n';
+}
 
 // ── ASS/SSA to SRT converter ─────────────────────────────────────
 
