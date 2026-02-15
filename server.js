@@ -499,7 +499,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         return {
           id: `titulky-${sub.id}`,
           url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-          lang: version,
+          lang: `[${version}]`,
           SubEncoding: 'UTF-8',
           SubFormat: 'vtt',
         };
@@ -535,7 +535,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         subtitles.unshift({
           id: `custom-${cs.key}`,
           url: subUrl,
-          lang: cs.label,
+          lang: `[${cs.label}]`,
           SubEncoding: 'UTF-8',
           SubFormat: subFormat,
         });
