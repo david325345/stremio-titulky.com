@@ -428,31 +428,48 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     if (!isUsableFilename && config.rdToken) {
       try {
         console.log(`[RD] No usable filename from Stremio (got: "${playingFilename}"), checking Real-Debrid…`);
+        const rdHeaders = { 'Authorization': `Bearer ${config.rdToken}` };
         
-        // Try /downloads first
-        const rdRes = await axios.get('https://api.real-debrid.com/rest/1.0/downloads?limit=1', {
-          headers: { 'Authorization': `Bearer ${config.rdToken}` },
-          timeout: 5000,
-        });
-        if (rdRes.data && rdRes.data.length > 0 && rdRes.data[0].filename) {
-          playingFilename = rdRes.data[0].filename;
-          console.log(`[RD] Got filename from /downloads: "${playingFilename}"`);
+        // Build search terms from IMDB title
+        const titleWords = name.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2);
+        
+        function matchesTitle(filename) {
+          if (!filename) return false;
+          const fn = filename.toLowerCase().replace(/[._-]/g, ' ');
+          return titleWords.length > 0 && titleWords.every(w => fn.includes(w));
         }
         
-        // If still no usable filename, try /torrents
-        if (extractReleaseTags(playingFilename).length === 0) {
-          const rdTorrents = await axios.get('https://api.real-debrid.com/rest/1.0/torrents?limit=5', {
-            headers: { 'Authorization': `Bearer ${config.rdToken}` },
-            timeout: 5000,
+        // Search /downloads for matching filename
+        let found = false;
+        const rdRes = await axios.get('https://api.real-debrid.com/rest/1.0/downloads?limit=20', {
+          headers: rdHeaders, timeout: 5000,
+        });
+        if (rdRes.data) {
+          const match = rdRes.data.find(d => matchesTitle(d.filename));
+          if (match) {
+            playingFilename = match.filename;
+            found = true;
+            console.log(`[RD] Found matching filename in /downloads: "${playingFilename}"`);
+          }
+        }
+        
+        // If not found, search /torrents
+        if (!found) {
+          const rdTorrents = await axios.get('https://api.real-debrid.com/rest/1.0/torrents?limit=20', {
+            headers: rdHeaders, timeout: 5000,
           });
-          if (rdTorrents.data && rdTorrents.data.length > 0) {
-            // Pick most recent torrent with a filename
-            const torrent = rdTorrents.data[0];
-            if (torrent.filename) {
-              playingFilename = torrent.filename;
-              console.log(`[RD] Got filename from /torrents: "${playingFilename}"`);
+          if (rdTorrents.data) {
+            const match = rdTorrents.data.find(t => matchesTitle(t.filename));
+            if (match) {
+              playingFilename = match.filename;
+              found = true;
+              console.log(`[RD] Found matching filename in /torrents: "${playingFilename}"`);
             }
           }
+        }
+        
+        if (!found) {
+          console.log(`[RD] No matching filename for "${name}" → using IMDB title + quality sort`);
         }
       } catch (e) {
         console.log(`[RD] API error: ${e.message}`);
