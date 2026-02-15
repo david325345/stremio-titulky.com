@@ -483,17 +483,13 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
 
       if (isOmni) {
         const omniLang = buildOmniLabel(sub, cached);
-        const version = sub.version || sub.title || 'Titulky.com';
-        const result = {
+        return {
           id: `titulky-${sub.id}`,
           url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
           lang: omniLang,
-          label: `${omniLang} ${version}`,
           SubEncoding: 'UTF-8',
           SubFormat: 'vtt',
         };
-        if (idx === 0) result.default = true;
-        return result;
       } else {
         const label = buildLabel(sub, score, hasReleaseTags);
         const icon = cached ? '✅' : '⬇️';
@@ -529,8 +525,6 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
           id: `custom-${cs.key}`,
           url: subUrl,
           lang: '📌',
-          label: `📌 ${cs.label}`,
-          default: subtitles.length === 0,
           SubEncoding: 'UTF-8',
           SubFormat: subFormat,
         });
