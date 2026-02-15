@@ -567,14 +567,14 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         subUrl = `${host}/custom-sub/${customImdbId}/${encodeURIComponent(cs.filename)}`;
       }
       if (isOmni) {
-        if (!omniCounters['📌']) omniCounters['📌'] = 0;
-        omniCounters['📌']++;
-        const num = numberEmoji(omniCounters['📌']);
-        const cleanId = cs.filename.replace(/[^a-zA-Z0-9]/g, '');
+        if (!omniCounters['✅📌']) omniCounters['✅📌'] = 0;
+        omniCounters['✅📌']++;
+        const num = numberEmoji(omniCounters['✅📌']);
+        const cleanId = `titulky-c${customImdbId}-${omniCounters['✅📌']}`;
         subtitles.unshift({
-          id: `titulky-custom-${cleanId}`,
+          id: cleanId,
           url: subUrl,
-          lang: `📌${num}`,
+          lang: `✅📌${num}`,
           SubEncoding: 'UTF-8',
           SubFormat: subFormat,
         });
