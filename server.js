@@ -595,7 +595,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       subtitles.unshift({
         id: `titulky-0`,
         url: subtitles[0].url,
-        lang: `∅`,
+        lang: `cze`,
         SubEncoding: 'UTF-8',
         SubFormat: subtitles[0].SubFormat,
       });
