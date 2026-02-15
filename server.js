@@ -589,6 +589,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       }
     }
 
+    console.log(`[Addon] Returning ${subtitles.length} subtitle(s)`, JSON.stringify(subtitles.map(s => ({ id: s.id, lang: s.lang, SubFormat: s.SubFormat, url: s.url.substring(0, 80) }))));
     res.json({ subtitles });
   } catch (e) {
     console.error('[Addon] Search error:', e.message);
