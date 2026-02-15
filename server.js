@@ -590,12 +590,12 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     }
 
     // Omni workaround: Omni doesn't show emoji when there's only 1 result.
-    // Add a duplicate so there are always at least 2.
+    // Prepend a dummy with standard emoji format to trigger emoji display.
     if (isOmni && subtitles.length === 1) {
-      subtitles.push({
-        id: `titulky-pad-${Date.now()}`,
+      subtitles.unshift({
+        id: `titulky-0`,
         url: subtitles[0].url,
-        lang: subtitles[0].lang,
+        lang: `✅📌1️⃣`,
         SubEncoding: 'UTF-8',
         SubFormat: subtitles[0].SubFormat,
       });
