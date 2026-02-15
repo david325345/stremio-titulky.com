@@ -496,12 +496,11 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       if (isOmni) {
         const icon = cached ? '✅' : '⬇️';
         const star = (hasReleaseTags && score > 0) ? '⭐' : '';
-        const version = sub.version || sub.title || 'CZ';
+        const quality = getQualityEmoji(sub.version || sub.title || '');
         return {
           id: `titulky-${sub.id}`,
           url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-          lang: `${icon}${star} ${version}`,
-          label: `${icon}${star} ${version}`,
+          lang: `${icon}${star}${quality}`,
           SubEncoding: 'UTF-8',
           SubFormat: 'vtt',
         };
@@ -576,38 +575,19 @@ function buildLabel(sub, score, hasReleaseTags) {
   return label;
 }
 
-function buildOmniLabel(sub, cached) {
-  const icon = cached ? '✅' : '⬇️';
-  const version = sub.version || sub.title || '';
-  const v = version.toLowerCase();
-
-  // Quality emoji for Omni display
-  let quality = '';
-
-  // Resolution + Source combined
-  if (v.includes('2160p') || v.includes('4k')) {
-    quality = '🔷'; // 4K
-  } else if (v.includes('remux')) {
-    quality = '💎'; // Remux
-  } else if (v.includes('bluray') || v.includes('blu-ray') || v.includes('bdrip') || v.includes('brrip')) {
-    quality = '💿'; // BluRay
-  } else if (v.includes('web-dl') || v.includes('webdl')) {
-    quality = '🌐'; // WEB-DL
-  } else if (v.includes('webrip')) {
-    quality = '🌐'; // WebRip
-  } else if (v.includes('hdtv')) {
-    quality = '📡'; // HDTV
-  } else if (v.includes('dvdrip') || v.includes('dvd')) {
-    quality = '📀'; // DVD
-  } else if (v.includes('1080p')) {
-    quality = '🎬'; // 1080p generic
-  } else if (v.includes('720p')) {
-    quality = '🎞'; // 720p generic
-  } else if (v.includes('cam') || v.includes('telesync')) {
-    quality = '📹'; // CAM
-  }
-
-  return quality ? `${icon}${quality}` : `${icon}`;
+function getQualityEmoji(version) {
+  const v = (version || '').toLowerCase();
+  if (v.includes('2160p') || v.includes('4k')) return '🔷';
+  if (v.includes('remux')) return '💎';
+  if (v.includes('bluray') || v.includes('blu-ray') || v.includes('bdrip') || v.includes('brrip')) return '💿';
+  if (v.includes('web-dl') || v.includes('webdl')) return '🌐';
+  if (v.includes('webrip')) return '🌐';
+  if (v.includes('hdtv')) return '📡';
+  if (v.includes('dvdrip') || v.includes('dvd')) return '📀';
+  if (v.includes('1080p')) return '🎬';
+  if (v.includes('720p')) return '🎞';
+  if (v.includes('cam') || v.includes('telesync')) return '📹';
+  return '';
 }
 
 // Quality ranking when no release tags from playing file
