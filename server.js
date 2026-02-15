@@ -490,15 +490,23 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       });
     }
 
+    const omniCounters = {};
     const subtitles = scoredResults.slice(0, 10).map(({ sub, score }) => {
       const cached = r2CachedIds.has(String(sub.id));
 
       if (isOmni) {
-        const langCode = sub.lang === 'slk' ? 'sk' : 'cs';
+        const icon = cached ? '✅' : '⬇️';
+        const star = (hasReleaseTags && score > 0) ? '⭐' : '';
+        const quality = getQualityEmoji(sub.version || sub.title || '');
+        // Counter per group for unique emoji sequence
+        const groupKey = `${icon}${star}${quality}`;
+        if (!omniCounters[groupKey]) omniCounters[groupKey] = 0;
+        omniCounters[groupKey]++;
+        const num = numberEmoji(omniCounters[groupKey]);
         return {
-          id: `titulky-${sub.id}-${encodeURIComponent(sub.version || sub.title || '')}`,
+          id: `titulky-${sub.id}`,
           url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-          lang: langCode,
+          lang: `${icon}${star}${quality}${num}`,
           SubEncoding: 'UTF-8',
           SubFormat: 'vtt',
         };
@@ -531,11 +539,10 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         subUrl = `${host}/custom-sub/${customImdbId}/${encodeURIComponent(cs.filename)}`;
       }
       if (isOmni) {
-        const langCode = cs.lang === 'slk' ? 'sk' : 'cs';
         subtitles.unshift({
           id: `custom-${cs.key}`,
           url: subUrl,
-          lang: langCode,
+          lang: '📌',
           SubEncoding: 'UTF-8',
           SubFormat: subFormat,
         });
@@ -582,6 +589,11 @@ function buildLabel(sub, score, hasReleaseTags) {
   let label = sub.version || sub.title || '';
   if (hasReleaseTags && score > 0) label = `⭐ ${label}`;
   return label;
+}
+
+const NUM_EMOJI = ['0️⃣','1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'];
+function numberEmoji(n) {
+  return NUM_EMOJI[n] || `${n}`;
 }
 
 function getQualityEmoji(version) {
