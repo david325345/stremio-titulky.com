@@ -478,17 +478,43 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     // Build response — max 10
     const configStr = req.params.config;
     const isOmni = !!config.omni;
+
+    // For Omni: sort by priority: cached+match > cached > download+match > download
+    if (isOmni) {
+      scoredResults.sort((a, b) => {
+        const aCached = r2CachedIds.has(String(a.sub.id)) ? 2 : 0;
+        const bCached = r2CachedIds.has(String(b.sub.id)) ? 2 : 0;
+        const aMatch = a.score > 0 && hasReleaseTags ? 1 : 0;
+        const bMatch = b.score > 0 && hasReleaseTags ? 1 : 0;
+        return (bCached + bMatch) - (aCached + aMatch) || b.score - a.score;
+      });
+    }
+
     const subtitles = scoredResults.slice(0, 10).map(({ sub, score }) => {
-      const label = buildLabel(sub, score, hasReleaseTags);
       const cached = r2CachedIds.has(String(sub.id));
-      const icon = cached ? '✅' : '⬇️';
-      return {
-        id: `titulky-${sub.id}`,
-        url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-        lang: `${icon} ${label || (sub.lang === 'cze' ? 'Čeština' : sub.lang === 'slk' ? 'Slovenčina' : sub.lang)}`,
-        SubEncoding: 'UTF-8',
-        SubFormat: isOmni ? 'vtt' : 'srt',
-      };
+
+      if (isOmni) {
+        const icon = cached ? '✅' : '⬇️';
+        const star = (hasReleaseTags && score > 0) ? '⭐' : '';
+        const version = sub.version || sub.title || 'CZ';
+        return {
+          id: `titulky-${sub.id}`,
+          url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
+          lang: `${icon}${star} ${version}`,
+          SubEncoding: 'UTF-8',
+          SubFormat: 'vtt',
+        };
+      } else {
+        const label = buildLabel(sub, score, hasReleaseTags);
+        const icon = cached ? '✅' : '⬇️';
+        return {
+          id: `titulky-${sub.id}`,
+          url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
+          lang: `${icon} ${label || (sub.lang === 'cze' ? 'Čeština' : sub.lang === 'slk' ? 'Slovenčina' : sub.lang)}`,
+          SubEncoding: 'UTF-8',
+          SubFormat: 'srt',
+        };
+      }
     });
 
     // Add custom subtitles from R2 (user-uploaded)
