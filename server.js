@@ -501,6 +501,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
           id: `titulky-${sub.id}`,
           url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
           lang: `${icon}${star} ${version}`,
+          label: `${icon}${star} ${version}`,
           SubEncoding: 'UTF-8',
           SubFormat: 'vtt',
         };
