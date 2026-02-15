@@ -595,7 +595,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       subtitles.unshift({
         id: `titulky-0`,
         url: subtitles[0].url,
-        lang: `✅📌1️⃣`,
+        lang: `∅`,
         SubEncoding: 'UTF-8',
         SubFormat: subtitles[0].SubFormat,
       });
@@ -644,11 +644,11 @@ function numberEmoji(n) {
 function getQualityEmoji(version) {
   const v = (version || '').toLowerCase();
   if (v.includes('remux')) return '💎';
-  if (v.includes('bluray') || v.includes('blu-ray') || v.includes('bdrip') || v.includes('brrip') || v.includes('2160p') || v.includes('4k')) return '🟢';
-  if (v.includes('web-dl') || v.includes('webdl') || v.includes('webrip') || v.includes('web')) return '🟡';
+  if (v.includes('bluray') || v.includes('blu-ray') || v.includes('bdrip') || v.includes('brrip') || v.includes('2160p') || v.includes('4k')) return '💿';
+  if (v.includes('web-dl') || v.includes('webdl') || v.includes('webrip') || v.includes('web')) return '🎞️';
   if (v.includes('hdtv')) return '🟠';
-  if (v.includes('dvdrip') || v.includes('dvd')) return '🔴';
-  if (v.includes('cam') || v.includes('telesync')) return '⚫';
+  if (v.includes('dvdrip') || v.includes('dvd')) return '📀';
+  if (v.includes('cam') || v.includes('telesync')) return '🎥';
   return '';
 }
 
