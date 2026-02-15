@@ -534,7 +534,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
           url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
           lang: `${icon}${star}${quality}${num}`,
           SubEncoding: 'UTF-8',
-          SubFormat: 'vtt',
+          SubFormat: 'srt',
         };
       } else {
         const label = buildLabel(sub, score, hasReleaseTags);
@@ -550,6 +550,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     });
 
     // Add custom subtitles from R2 (user-uploaded)
+    const isFusion = !!config.fusion;
     const imdbIdClean = id.split(':')[0];
     const customImdbId = type === 'series' ? id.replace(/:/g, '-') : imdbIdClean;
     const customSubs = await r2GetCustomSubs(customImdbId);
@@ -557,7 +558,8 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       const ext = cs.filename.split('.').pop().toLowerCase();
       const isAssType = ext === 'ass' || ext === 'ssa';
       let subFormat, subUrl;
-      if (isOmni && isAssType) {
+      if ((isOmni || isFusion) && isAssType) {
+        // Omni & Fusion: serve ASS/SSA raw (no conversion)
         subFormat = ext;
         subUrl = `${host}/custom-sub-raw/${customImdbId}/${encodeURIComponent(cs.filename)}`;
       } else {
@@ -726,19 +728,11 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
   const config = decodeConfig(req.params.config);
   if (!config) return res.status(400).send('Invalid config');
 
-  const isOmni = !!config.omni;
   const { subId, linkFile } = req.params;
   const cacheKey = `${subId}-${linkFile}`;
 
-  // Helper: send subtitle with optional SRT→VTT conversion for Omni
+  // Helper: send subtitle
   function sendSub(content, filename) {
-    if (isOmni) {
-      const vtt = srtToVtt(content);
-      const vttFilename = filename.replace(/\.srt$/i, '.vtt');
-      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(vttFilename)}"`);
-      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-      return res.send(vtt);
-    }
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     return res.send(content);
@@ -748,7 +742,7 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
   if (subtitleCache.has(cacheKey)) {
     const cached = subtitleCache.get(cacheKey);
     if (Date.now() - cached.time < SUBTITLE_CACHE_TTL) {
-      console.log(`[Addon] Serving memory-cached subtitle ${subId}${isOmni ? ' (VTT)' : ''}`);
+      console.log(`[Addon] Serving memory-cached subtitle ${subId}`);
       return sendSub(cached.content, cached.filename);
     }
     subtitleCache.delete(cacheKey);
@@ -770,7 +764,7 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
       // After wait, check cache again
       if (subtitleCache.has(cacheKey)) {
         const cached = subtitleCache.get(cacheKey);
-        console.log(`[Addon] Serving after-wait cached subtitle ${subId}${isOmni ? ' (VTT)' : ''}`);
+        console.log(`[Addon] Serving after-wait cached subtitle ${subId}`);
         return sendSub(cached.content, cached.filename);
       }
     }
@@ -794,10 +788,8 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
       console.log(`[Addon] Download failed for ${subId} - captcha or limit reached`);
       downloadLocks.delete(subId);
       resolveLock();
-      const limitMsg = isOmni
-        ? `WEBVTT\n\n1\n00:00:01.000 --> 00:00:30.000\nPřekročili jste denní limit stažení titulků z Titulky.com. Stáhněte titulky které jsou v cachi (označené ✅) nebo počkejte na reset limitu do dalšího dne.\n`
-        : `1\n00:00:01,000 --> 00:00:30,000\nPřekročili jste denní limit stažení titulků z Titulky.com. Stáhněte titulky které jsou v cachi (označené ✅) nebo počkejte na reset limitu do dalšího dne.\n`;
-      res.setHeader('Content-Type', isOmni ? 'text/vtt; charset=utf-8' : 'text/plain; charset=utf-8');
+      const limitMsg = `1\n00:00:01,000 --> 00:00:30,000\nPřekročili jste denní limit stažení titulků z Titulky.com. Stáhněte titulky které jsou v cachi (označené ✅) nebo počkejte na reset limitu do dalšího dne.\n`;
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       return res.send(limitMsg);
     }
 
@@ -1521,11 +1513,18 @@ function getConfigurePage(host) {
   <label for="password">Heslo</label>
   <input type="password" id="password" placeholder="Vaše heslo" autocomplete="current-password">
 
-  <div class="omni-section" style="margin-top: 20px;">
-    <label class="toggle-row" style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 0;">
-      <input type="checkbox" id="omniToggle" onchange="toggleOmni()" style="width: auto; accent-color: var(--accent); transform: scale(1.2);">
-      <span style="font-size: 14px; color: var(--text);">Optimalizace pro Omni na ATV</span>
-    </label>
+  <div class="device-section" style="margin-top: 20px;">
+    <label style="margin-bottom: 10px;">OPTIMALIZACE PRO APPLE TV</label>
+    <div class="toggle-group" style="display: flex; flex-direction: column; gap: 8px;">
+      <label class="toggle-row" style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 0;">
+        <input type="checkbox" id="omniToggle" onchange="toggleDevice('omni')" style="width: auto; accent-color: var(--accent); transform: scale(1.2);">
+        <span style="font-size: 14px; color: var(--text);">Omni</span>
+      </label>
+      <label class="toggle-row" style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 0;">
+        <input type="checkbox" id="fusionToggle" onchange="toggleDevice('fusion')" style="width: auto; accent-color: var(--accent); transform: scale(1.2);">
+        <span style="font-size: 14px; color: var(--text);">Fusion</span>
+      </label>
+    </div>
     <div id="rdSection" style="display: none; margin-top: 12px; padding: 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);">
       <label for="rdToken" style="margin-top: 0;">Real-Debrid API klíč</label>
       <input type="text" id="rdToken" placeholder="Získejte na real-debrid.com/apitoken" style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">
@@ -1564,15 +1563,19 @@ function getConfigurePage(host) {
 <script>
 const HOST = '${host}';
 
-function toggleOmni() {
-  const checked = document.getElementById('omniToggle').checked;
-  document.getElementById('rdSection').style.display = checked ? 'block' : 'none';
+function toggleDevice(which) {
+  const omni = document.getElementById('omniToggle');
+  const fusion = document.getElementById('fusionToggle');
+  if (which === 'omni' && omni.checked) fusion.checked = false;
+  else if (which === 'fusion' && fusion.checked) omni.checked = false;
+  document.getElementById('rdSection').style.display = (omni.checked || fusion.checked) ? 'block' : 'none';
 }
 
 async function verify() {
   const username = document.getElementById('username').value.trim();
   const password = document.getElementById('password').value.trim();
   const omni = document.getElementById('omniToggle').checked;
+  const fusion = document.getElementById('fusionToggle').checked;
   const rdToken = document.getElementById('rdToken').value.trim();
   const status = document.getElementById('status');
   const result = document.getElementById('result');
@@ -1607,7 +1610,8 @@ async function verify() {
 
       const configObj = { username, password };
       if (omni) configObj.omni = true;
-      if (omni && rdToken) configObj.rdToken = rdToken;
+      if (fusion) configObj.fusion = true;
+      if ((omni || fusion) && rdToken) configObj.rdToken = rdToken;
 
       const config = btoa(JSON.stringify(configObj))
         .replace(/[+]/g, '-').replace(/[/]/g, '_').replace(/=+$/, '');
@@ -1661,7 +1665,11 @@ document.getElementById('password').addEventListener('keydown', e => {
       document.getElementById('password').value = parsed.password;
       if (parsed.omni) {
         document.getElementById('omniToggle').checked = true;
-        toggleOmni();
+        toggleDevice('omni');
+      }
+      if (parsed.fusion) {
+        document.getElementById('fusionToggle').checked = true;
+        toggleDevice('fusion');
       }
       if (parsed.rdToken) {
         document.getElementById('rdToken').value = parsed.rdToken;
