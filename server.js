@@ -694,6 +694,9 @@ function isValidUtf8(str) {
 
 // ── Subtitle download proxy ───────────────────────────────────────
 
+// Download lock: prevents multiple parallel downloads of the same subtitle
+const downloadLocks = new Map(); // subId → Promise
+
 app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
   const config = decodeConfig(req.params.config);
   if (!config) return res.status(400).send('Invalid config');
@@ -733,16 +736,39 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
     return sendSub(r2Cached.content, r2Cached.filename);
   }
 
-  // 3. Download from titulky.com
+  // 3. Download from titulky.com (with lock to prevent parallel downloads)
   try {
+    // If another request is already downloading this subtitle, wait for it
+    if (downloadLocks.has(subId)) {
+      console.log(`[Addon] Waiting for ongoing download of ${subId}…`);
+      await downloadLocks.get(subId);
+      // After wait, check cache again
+      if (subtitleCache.has(cacheKey)) {
+        const cached = subtitleCache.get(cacheKey);
+        console.log(`[Addon] Serving after-wait cached subtitle ${subId}${isOmni ? ' (VTT)' : ''}`);
+        return sendSub(cached.content, cached.filename);
+      }
+    }
+
+    // Create lock promise
+    let resolveLock;
+    const lockPromise = new Promise(r => { resolveLock = r; });
+    downloadLocks.set(subId, lockPromise);
+
     const client = await getClient(config);
-    if (!client) return res.status(500).send('Login failed');
+    if (!client) {
+      downloadLocks.delete(subId);
+      resolveLock();
+      return res.status(500).send('Login failed');
+    }
 
     const decoded = decodeURIComponent(linkFile);
     const files = await client.downloadSubtitle(subId, decoded);
 
     if (!files || files.length === 0) {
       console.log(`[Addon] Download failed for ${subId} - captcha or limit reached`);
+      downloadLocks.delete(subId);
+      resolveLock();
       const limitMsg = isOmni
         ? `WEBVTT\n\n1\n00:00:01.000 --> 00:00:30.000\nPřekročili jste denní limit stažení titulků z Titulky.com. Stáhněte titulky které jsou v cachi (označené ✅) nebo počkejte na reset limitu do dalšího dne.\n`
         : `1\n00:00:01,000 --> 00:00:30,000\nPřekročili jste denní limit stažení titulků z Titulky.com. Stáhněte titulky které jsou v cachi (označené ✅) nebo počkejte na reset limitu do dalšího dne.\n`;
@@ -762,8 +788,17 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
     // Save to R2 cloud cache (async, don't wait)
     r2Put(subId, utf8Content, file.filename);
 
+    // Release lock
+    downloadLocks.delete(subId);
+    resolveLock();
+
     return sendSub(utf8Content, file.filename);
   } catch (e) {
+    // Release lock on error
+    if (downloadLocks.has(subId)) {
+      const lock = downloadLocks.get(subId);
+      downloadLocks.delete(subId);
+    }
     console.error('[Addon] Download error:', e.message);
     res.status(500).send('Download failed');
   }
