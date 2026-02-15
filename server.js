@@ -498,11 +498,10 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         const status = cached ? '[C]' : '[D]';
         const star = (hasReleaseTags && score > 0) ? '*' : '';
         const version = sub.version || sub.title || 'CZ';
-        // Use full version text as unique lang - each subtitle gets own group
         return {
           id: `titulky-${sub.id}`,
           url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-          lang: `${status}${star} ${version}`,
+          lang: `${status}${star}${version}`,
           SubEncoding: 'UTF-8',
           SubFormat: 'vtt',
         };
@@ -538,7 +537,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         subtitles.unshift({
           id: `custom-${cs.key}`,
           url: subUrl,
-          lang: `[vlastni] ${cs.label}`,
+          lang: `[vlastni]${cs.label}`,
           SubEncoding: 'UTF-8',
           SubFormat: subFormat,
         });
