@@ -478,30 +478,17 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     // Build response — max 10
     const configStr = req.params.config;
     const isOmni = !!config.omni;
-    const subtitles = scoredResults.slice(0, 10).map(({ sub, score }, idx) => {
+    const subtitles = scoredResults.slice(0, 10).map(({ sub, score }) => {
+      const label = buildLabel(sub, score, hasReleaseTags);
       const cached = r2CachedIds.has(String(sub.id));
-
-      if (isOmni) {
-        const omniLang = buildOmniLabel(sub, cached);
-        return {
-          id: `titulky-${sub.id}`,
-          url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-          lang: omniLang,
-          SubEncoding: 'UTF-8',
-          SubFormat: 'vtt',
-        };
-      } else {
-        const label = buildLabel(sub, score, hasReleaseTags);
-        const icon = cached ? '✅' : '⬇️';
-        const langLabel = `${icon} ${label || (sub.lang === 'cze' ? 'Čeština' : sub.lang === 'slk' ? 'Slovenčina' : sub.lang)}`;
-        return {
-          id: `titulky-${sub.id}`,
-          url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-          lang: langLabel,
-          SubEncoding: 'UTF-8',
-          SubFormat: 'srt',
-        };
-      }
+      const icon = cached ? '✅' : '⬇️';
+      return {
+        id: `titulky-${sub.id}`,
+        url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
+        lang: `${icon} ${label || (sub.lang === 'cze' ? 'Čeština' : sub.lang === 'slk' ? 'Slovenčina' : sub.lang)}`,
+        SubEncoding: 'UTF-8',
+        SubFormat: isOmni ? 'vtt' : 'srt',
+      };
     });
 
     // Add custom subtitles from R2 (user-uploaded)
@@ -519,24 +506,13 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         subFormat = (isAssType || ext === 'vtt') ? 'vtt' : 'srt';
         subUrl = `${host}/custom-sub/${customImdbId}/${encodeURIComponent(cs.filename)}`;
       }
-
-      if (isOmni) {
-        subtitles.unshift({
-          id: `custom-${cs.key}`,
-          url: subUrl,
-          lang: '📌',
-          SubEncoding: 'UTF-8',
-          SubFormat: subFormat,
-        });
-      } else {
-        subtitles.unshift({
-          id: `custom-${cs.key}`,
-          url: subUrl,
-          lang: `📌 ${cs.label}`,
-          SubEncoding: 'UTF-8',
-          SubFormat: subFormat,
-        });
-      }
+      subtitles.unshift({
+        id: `custom-${cs.key}`,
+        url: subUrl,
+        lang: `📌 ${cs.label}`,
+        SubEncoding: 'UTF-8',
+        SubFormat: subFormat,
+      });
     }
 
     res.json({ subtitles });
