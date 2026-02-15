@@ -571,10 +571,11 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         omniCounters['✅📌']++;
         const num = numberEmoji(omniCounters['✅📌']);
         const cleanId = `titulky-c${customImdbId}-${omniCounters['✅📌']}`;
+        const langCode = cs.lang === 'slk' ? 'slk' : cs.lang === 'eng' ? 'eng' : 'cze';
         subtitles.unshift({
           id: cleanId,
           url: subUrl,
-          lang: `✅📌${num}`,
+          lang: `${langCode}`,
           SubEncoding: 'UTF-8',
           SubFormat: isAssType ? 'srt' : subFormat,
         });
