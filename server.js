@@ -482,14 +482,13 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       const cached = r2CachedIds.has(String(sub.id));
 
       if (isOmni) {
-        const icon = cached ? '✅' : '⬇️';
+        const omniLang = buildOmniLabel(sub, cached);
         const version = sub.version || sub.title || 'Titulky.com';
-        const langCode = sub.lang === 'slk' ? 'sk' : 'cs';
         const result = {
           id: `titulky-${sub.id}`,
           url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-          lang: langCode,
-          label: `${icon} ${version}`,
+          lang: omniLang,
+          label: `${omniLang} ${version}`,
           SubEncoding: 'UTF-8',
           SubFormat: 'vtt',
         };
@@ -526,11 +525,10 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       }
 
       if (isOmni) {
-        const langCode = cs.lang === 'slk' ? 'sk' : 'cs';
         subtitles.unshift({
           id: `custom-${cs.key}`,
           url: subUrl,
-          lang: langCode,
+          lang: '📌',
           label: `📌 ${cs.label}`,
           default: subtitles.length === 0,
           SubEncoding: 'UTF-8',
