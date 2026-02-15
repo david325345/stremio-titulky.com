@@ -494,13 +494,11 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       const cached = r2CachedIds.has(String(sub.id));
 
       if (isOmni) {
-        const icon = cached ? '✅' : '⬇️';
-        const star = (hasReleaseTags && score > 0) ? '⭐' : '';
-        const quality = getQualityEmoji(sub.version || sub.title || '');
+        const langCode = sub.lang === 'slk' ? 'sk' : 'cs';
         return {
-          id: `titulky-${sub.id}`,
+          id: `titulky-${sub.id}-${encodeURIComponent(sub.version || sub.title || '')}`,
           url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-          lang: `${icon}${star}${quality}`,
+          lang: langCode,
           SubEncoding: 'UTF-8',
           SubFormat: 'vtt',
         };
@@ -532,13 +530,24 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         subFormat = (isAssType || ext === 'vtt') ? 'vtt' : 'srt';
         subUrl = `${host}/custom-sub/${customImdbId}/${encodeURIComponent(cs.filename)}`;
       }
-      subtitles.unshift({
-        id: `custom-${cs.key}`,
-        url: subUrl,
-        lang: `📌 ${cs.label}`,
-        SubEncoding: 'UTF-8',
-        SubFormat: subFormat,
-      });
+      if (isOmni) {
+        const langCode = cs.lang === 'slk' ? 'sk' : 'cs';
+        subtitles.unshift({
+          id: `custom-${cs.key}`,
+          url: subUrl,
+          lang: langCode,
+          SubEncoding: 'UTF-8',
+          SubFormat: subFormat,
+        });
+      } else {
+        subtitles.unshift({
+          id: `custom-${cs.key}`,
+          url: subUrl,
+          lang: `📌 ${cs.label}`,
+          SubEncoding: 'UTF-8',
+          SubFormat: subFormat,
+        });
+      }
     }
 
     res.json({ subtitles });
@@ -685,6 +694,8 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
   function sendSub(content, filename) {
     if (isOmni) {
       const vtt = srtToVtt(content);
+      const vttFilename = filename.replace(/\.srt$/i, '.vtt');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(vttFilename)}"`);
       res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
       return res.send(vtt);
     }
@@ -921,6 +932,7 @@ app.get('/custom-sub/:imdbId/:filename', async (req, res) => {
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     }
 
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(filename)}"`);
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.send(content);
   } catch (e) {
@@ -946,6 +958,7 @@ app.get('/custom-sub-raw/:imdbId/:filename', async (req, res) => {
     const buf = Buffer.concat(chunks);
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(filename)}"`);
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.send(buf);
   } catch (e) {
