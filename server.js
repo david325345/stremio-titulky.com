@@ -495,18 +495,14 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       const cached = r2CachedIds.has(String(sub.id));
 
       if (isOmni) {
-        const icon = cached ? '✅' : '⬇️';
-        const star = (hasReleaseTags && score > 0) ? '⭐' : '';
-        const quality = getQualityEmoji(sub.version || sub.title || '');
-        // Counter per group for unique emoji sequence
-        const groupKey = `${icon}${star}${quality}`;
-        if (!omniCounters[groupKey]) omniCounters[groupKey] = 0;
-        omniCounters[groupKey]++;
-        const num = numberEmoji(omniCounters[groupKey]);
+        const status = cached ? '[C]' : '[D]';
+        const star = (hasReleaseTags && score > 0) ? '*' : '';
+        const version = sub.version || sub.title || 'CZ';
+        // Use full version text as unique lang - each subtitle gets own group
         return {
           id: `titulky-${sub.id}`,
           url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
-          lang: `${icon}${star}${quality}${num}`,
+          lang: `${status}${star} ${version}`,
           SubEncoding: 'UTF-8',
           SubFormat: 'vtt',
         };
@@ -539,13 +535,10 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         subUrl = `${host}/custom-sub/${customImdbId}/${encodeURIComponent(cs.filename)}`;
       }
       if (isOmni) {
-        if (!omniCounters['📌']) omniCounters['📌'] = 0;
-        omniCounters['📌']++;
-        const num = numberEmoji(omniCounters['📌']);
         subtitles.unshift({
           id: `custom-${cs.key}`,
           url: subUrl,
-          lang: `📌${num}`,
+          lang: `[vlastni] ${cs.label}`,
           SubEncoding: 'UTF-8',
           SubFormat: subFormat,
         });
