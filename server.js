@@ -335,7 +335,7 @@ function getManifest(config, host) {
     resources: ['subtitles'],
     types: ['movie', 'series'],
     idPrefixes: ['tt'],
-    logo: 'https://www.titulky.com/favicon.ico',
+    logo: 'https://raw.githubusercontent.com/david325345/stremio-titulky.com/main/public/logo.png',
     behaviorHints: {
       configurable: true,
     },
@@ -534,7 +534,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
           url: `${host}/sub/${configStr}/${sub.id}/${encodeURIComponent(sub.linkFile)}`,
           lang: `${icon}${star}${quality}${num}`,
           SubEncoding: 'UTF-8',
-          SubFormat: 'srt',
+          SubFormat: 'vtt',
         };
       } else {
         const label = buildLabel(sub, score, hasReleaseTags);
@@ -550,7 +550,6 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
     });
 
     // Add custom subtitles from R2 (user-uploaded)
-    const isFusion = !!config.fusion;
     const imdbIdClean = id.split(':')[0];
     const customImdbId = type === 'series' ? id.replace(/:/g, '-') : imdbIdClean;
     const customSubs = await r2GetCustomSubs(customImdbId);
@@ -558,8 +557,7 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       const ext = cs.filename.split('.').pop().toLowerCase();
       const isAssType = ext === 'ass' || ext === 'ssa';
       let subFormat, subUrl;
-      if ((isOmni || isFusion) && isAssType) {
-        // Omni & Fusion: serve ASS/SSA raw (no conversion)
+      if (isOmni && isAssType) {
         subFormat = ext;
         subUrl = `${host}/custom-sub-raw/${customImdbId}/${encodeURIComponent(cs.filename)}`;
       } else {
@@ -567,16 +565,15 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
         subUrl = `${host}/custom-sub/${customImdbId}/${encodeURIComponent(cs.filename)}`;
       }
       if (isOmni) {
-        if (!omniCounters['✅📌']) omniCounters['✅📌'] = 0;
-        omniCounters['✅📌']++;
-        const num = numberEmoji(omniCounters['✅📌']);
-        const cleanId = `titulky-c${customImdbId}-${omniCounters['✅📌']}`;
-        subtitles.push({
-          id: cleanId,
+        if (!omniCounters['📌']) omniCounters['📌'] = 0;
+        omniCounters['📌']++;
+        const num = numberEmoji(omniCounters['📌']);
+        subtitles.unshift({
+          id: `custom-${cs.key}`,
           url: subUrl,
-          lang: `✅📌${num}`,
+          lang: `📌${num}`,
           SubEncoding: 'UTF-8',
-          SubFormat: isAssType ? 'srt' : subFormat,
+          SubFormat: subFormat,
         });
       } else {
         subtitles.unshift({
@@ -589,19 +586,6 @@ app.get('/:config/subtitles/:type/:id/:extra?.json', async (req, res) => {
       }
     }
 
-    // Omni workaround: Omni doesn't show emoji when there's only 1 result.
-    // Prepend a dummy with standard emoji format to trigger emoji display.
-    if (isOmni && subtitles.length === 1) {
-      subtitles.unshift({
-        id: `titulky-0`,
-        url: subtitles[0].url,
-        lang: `cze`,
-        SubEncoding: 'UTF-8',
-        SubFormat: subtitles[0].SubFormat,
-      });
-    }
-
-    console.log(`[Addon] Returning ${subtitles.length} subtitle(s)`, JSON.stringify(subtitles.map(s => ({ id: s.id, lang: s.lang, SubFormat: s.SubFormat, url: s.url.substring(0, 80) }))));
     res.json({ subtitles });
   } catch (e) {
     console.error('[Addon] Search error:', e.message);
@@ -644,11 +628,11 @@ function numberEmoji(n) {
 function getQualityEmoji(version) {
   const v = (version || '').toLowerCase();
   if (v.includes('remux')) return '💎';
-  if (v.includes('bluray') || v.includes('blu-ray') || v.includes('bdrip') || v.includes('brrip') || v.includes('2160p') || v.includes('4k')) return '💿';
-  if (v.includes('web-dl') || v.includes('webdl') || v.includes('webrip') || v.includes('web')) return '🎞️';
+  if (v.includes('bluray') || v.includes('blu-ray') || v.includes('bdrip') || v.includes('brrip') || v.includes('2160p') || v.includes('4k')) return '🟢';
+  if (v.includes('web-dl') || v.includes('webdl') || v.includes('webrip') || v.includes('web')) return '🟡';
   if (v.includes('hdtv')) return '🟠';
-  if (v.includes('dvdrip') || v.includes('dvd')) return '📀';
-  if (v.includes('cam') || v.includes('telesync')) return '🎥';
+  if (v.includes('dvdrip') || v.includes('dvd')) return '🔴';
+  if (v.includes('cam') || v.includes('telesync')) return '⚫';
   return '';
 }
 
@@ -742,11 +726,19 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
   const config = decodeConfig(req.params.config);
   if (!config) return res.status(400).send('Invalid config');
 
+  const isOmni = !!config.omni;
   const { subId, linkFile } = req.params;
   const cacheKey = `${subId}-${linkFile}`;
 
-  // Helper: send subtitle
+  // Helper: send subtitle with optional SRT→VTT conversion for Omni
   function sendSub(content, filename) {
+    if (isOmni) {
+      const vtt = srtToVtt(content);
+      const vttFilename = filename.replace(/\.srt$/i, '.vtt');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(vttFilename)}"`);
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+      return res.send(vtt);
+    }
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     return res.send(content);
@@ -756,7 +748,7 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
   if (subtitleCache.has(cacheKey)) {
     const cached = subtitleCache.get(cacheKey);
     if (Date.now() - cached.time < SUBTITLE_CACHE_TTL) {
-      console.log(`[Addon] Serving memory-cached subtitle ${subId}`);
+      console.log(`[Addon] Serving memory-cached subtitle ${subId}${isOmni ? ' (VTT)' : ''}`);
       return sendSub(cached.content, cached.filename);
     }
     subtitleCache.delete(cacheKey);
@@ -778,7 +770,7 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
       // After wait, check cache again
       if (subtitleCache.has(cacheKey)) {
         const cached = subtitleCache.get(cacheKey);
-        console.log(`[Addon] Serving after-wait cached subtitle ${subId}`);
+        console.log(`[Addon] Serving after-wait cached subtitle ${subId}${isOmni ? ' (VTT)' : ''}`);
         return sendSub(cached.content, cached.filename);
       }
     }
@@ -802,8 +794,10 @@ app.get('/sub/:config/:subId/:linkFile', async (req, res) => {
       console.log(`[Addon] Download failed for ${subId} - captcha or limit reached`);
       downloadLocks.delete(subId);
       resolveLock();
-      const limitMsg = `1\n00:00:01,000 --> 00:00:30,000\nPřekročili jste denní limit stažení titulků z Titulky.com. Stáhněte titulky které jsou v cachi (označené ✅) nebo počkejte na reset limitu do dalšího dne.\n`;
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      const limitMsg = isOmni
+        ? `WEBVTT\n\n1\n00:00:01.000 --> 00:00:30.000\nPřekročili jste denní limit stažení titulků z Titulky.com. Stáhněte titulky které jsou v cachi (označené ✅) nebo počkejte na reset limitu do dalšího dne.\n`
+        : `1\n00:00:01,000 --> 00:00:30,000\nPřekročili jste denní limit stažení titulků z Titulky.com. Stáhněte titulky které jsou v cachi (označené ✅) nebo počkejte na reset limitu do dalšího dne.\n`;
+      res.setHeader('Content-Type', isOmni ? 'text/vtt; charset=utf-8' : 'text/plain; charset=utf-8');
       return res.send(limitMsg);
     }
 
@@ -1527,18 +1521,11 @@ function getConfigurePage(host) {
   <label for="password">Heslo</label>
   <input type="password" id="password" placeholder="Vaše heslo" autocomplete="current-password">
 
-  <div class="device-section" style="margin-top: 20px;">
-    <label style="margin-bottom: 10px;">OPTIMALIZACE PRO APPLE TV</label>
-    <div class="toggle-group" style="display: flex; flex-direction: column; gap: 8px;">
-      <label class="toggle-row" style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 0;">
-        <input type="checkbox" id="omniToggle" onchange="toggleDevice('omni')" style="width: auto; accent-color: var(--accent); transform: scale(1.2);">
-        <span style="font-size: 14px; color: var(--text);">Omni</span>
-      </label>
-      <label class="toggle-row" style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 0;">
-        <input type="checkbox" id="fusionToggle" onchange="toggleDevice('fusion')" style="width: auto; accent-color: var(--accent); transform: scale(1.2);">
-        <span style="font-size: 14px; color: var(--text);">Fusion</span>
-      </label>
-    </div>
+  <div class="omni-section" style="margin-top: 20px;">
+    <label class="toggle-row" style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 0;">
+      <input type="checkbox" id="omniToggle" onchange="toggleOmni()" style="width: auto; accent-color: var(--accent); transform: scale(1.2);">
+      <span style="font-size: 14px; color: var(--text);">Optimalizace pro Omni na ATV</span>
+    </label>
     <div id="rdSection" style="display: none; margin-top: 12px; padding: 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);">
       <label for="rdToken" style="margin-top: 0;">Real-Debrid API klíč</label>
       <input type="text" id="rdToken" placeholder="Získejte na real-debrid.com/apitoken" style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">
@@ -1577,19 +1564,15 @@ function getConfigurePage(host) {
 <script>
 const HOST = '${host}';
 
-function toggleDevice(which) {
-  const omni = document.getElementById('omniToggle');
-  const fusion = document.getElementById('fusionToggle');
-  if (which === 'omni' && omni.checked) fusion.checked = false;
-  else if (which === 'fusion' && fusion.checked) omni.checked = false;
-  document.getElementById('rdSection').style.display = (omni.checked || fusion.checked) ? 'block' : 'none';
+function toggleOmni() {
+  const checked = document.getElementById('omniToggle').checked;
+  document.getElementById('rdSection').style.display = checked ? 'block' : 'none';
 }
 
 async function verify() {
   const username = document.getElementById('username').value.trim();
   const password = document.getElementById('password').value.trim();
   const omni = document.getElementById('omniToggle').checked;
-  const fusion = document.getElementById('fusionToggle').checked;
   const rdToken = document.getElementById('rdToken').value.trim();
   const status = document.getElementById('status');
   const result = document.getElementById('result');
@@ -1624,8 +1607,7 @@ async function verify() {
 
       const configObj = { username, password };
       if (omni) configObj.omni = true;
-      if (fusion) configObj.fusion = true;
-      if ((omni || fusion) && rdToken) configObj.rdToken = rdToken;
+      if (omni && rdToken) configObj.rdToken = rdToken;
 
       const config = btoa(JSON.stringify(configObj))
         .replace(/[+]/g, '-').replace(/[/]/g, '_').replace(/=+$/, '');
@@ -1679,11 +1661,7 @@ document.getElementById('password').addEventListener('keydown', e => {
       document.getElementById('password').value = parsed.password;
       if (parsed.omni) {
         document.getElementById('omniToggle').checked = true;
-        toggleDevice('omni');
-      }
-      if (parsed.fusion) {
-        document.getElementById('fusionToggle').checked = true;
-        toggleDevice('fusion');
+        toggleOmni();
       }
       if (parsed.rdToken) {
         document.getElementById('rdToken').value = parsed.rdToken;
